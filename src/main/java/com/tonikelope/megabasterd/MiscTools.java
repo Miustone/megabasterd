@@ -482,47 +482,51 @@ public class MiscTools {
 
     public static void updateFonts(final Component component, final Font font, final float zoom_factor) {
 
-        if (component != null) {
+        if (component == null || font == null) {
+            return;
+        }
 
-            if (component instanceof javax.swing.JMenu) {
+        if (component instanceof javax.swing.JMenu) {
 
-                for (Component child : ((javax.swing.JMenu) component).getMenuComponents()) {
-                    if (child instanceof JMenuItem) {
+            for (Component child : ((javax.swing.JMenu) component).getMenuComponents()) {
+                if (child instanceof JMenuItem) {
 
-                        updateFonts(child, font, zoom_factor);
-                    }
-                }
-
-            } else if (component instanceof Container) {
-
-                for (Component child : ((Container) component).getComponents()) {
-                    if (child instanceof Container) {
-
-                        updateFonts(child, font, zoom_factor);
-                    }
+                    updateFonts(child, font, zoom_factor);
                 }
             }
 
-            Font old_font = component.getFont();
+        } else if (component instanceof Container) {
 
-            Font new_font = font.deriveFont(old_font.getStyle(), Math.round(old_font.getSize() * zoom_factor));
+            for (Component child : ((Container) component).getComponents()) {
+                if (child instanceof Container) {
 
-            // Cap retries: setFont should not throw, but if it does (headless
-            // contexts have surfaced odd cases) we don't want to spin the EDT
-            // forever as the old "do { ... } while (error)" with no bound did.
-            int attempts = 0;
-            while (true) {
-                try {
-                    component.setFont(new_font);
+                    updateFonts(child, font, zoom_factor);
+                }
+            }
+        }
+
+        Font old_font = component.getFont();
+
+        if (old_font == null) {
+            return;
+        }
+
+        Font new_font = font.deriveFont(old_font.getStyle(), Math.round(old_font.getSize() * zoom_factor));
+
+        // Cap retries: setFont should not throw, but if it does (headless
+        // contexts have surfaced odd cases) we don't want to spin the EDT
+        // forever as the old "do { ... } while (error)" with no bound did.
+        int attempts = 0;
+        while (true) {
+            try {
+                component.setFont(new_font);
+                break;
+            } catch (Exception ex) {
+                if (++attempts >= 3) {
+                    Logger.getLogger(MiscTools.class.getName()).log(Level.WARNING, "setFont failed after {0} attempts: {1}", new Object[]{attempts, ex.getMessage()});
                     break;
-                } catch (Exception ex) {
-                    if (++attempts >= 3) {
-                        Logger.getLogger(MiscTools.class.getName()).log(Level.WARNING, "setFont failed after {0} attempts: {1}", new Object[]{attempts, ex.getMessage()});
-                        break;
-                    }
                 }
             }
-
         }
     }
 

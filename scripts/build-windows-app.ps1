@@ -36,7 +36,13 @@ try {
     $inputDir = "$RepoRoot\target\jpackage-input"
     $destDir = "$RepoRoot\target\dist"
     Remove-Item -Recurse -Force $inputDir -ErrorAction SilentlyContinue
-    Remove-Item -Recurse -Force "$destDir\MegaBasterd" -ErrorAction SilentlyContinue
+    if (Test-Path "$destDir\MegaBasterd") {
+        try {
+            Remove-Item -Recurse -Force "$destDir\MegaBasterd" -ErrorAction Stop
+        } catch {
+            throw "Cannot replace $destDir\MegaBasterd (close running MegaBasterd.exe first): $($_.Exception.Message)"
+        }
+    }
     New-Item -ItemType Directory -Force -Path $inputDir,$destDir | Out-Null
 
     $jarName = "MegaBasterd-9.0.0-jar-with-dependencies.jar"

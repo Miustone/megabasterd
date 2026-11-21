@@ -4,13 +4,22 @@ setlocal EnableExtensions EnableDelayedExpansion
 set "ROOT_DIR=%~dp0"
 if "%ROOT_DIR:~-1%"=="\" set "ROOT_DIR=%ROOT_DIR:~0,-1%"
 
+set "JAR_PATH=%ROOT_DIR%\target\MegaBasterd-9.0.0-jar-with-dependencies.jar"
 set "EXE_PATH=%ROOT_DIR%\target\dist\MegaBasterd\MegaBasterd.exe"
+set "EXE_JAR=%ROOT_DIR%\target\dist\MegaBasterd\app\MegaBasterd-9.0.0-jar-with-dependencies.jar"
 if exist "%EXE_PATH%" (
-    start "" "%EXE_PATH%" %*
-    exit /b 0
+    set "USE_EXE=1"
+    if exist "%JAR_PATH%" if exist "%EXE_JAR%" (
+        for /f %%R in ('powershell -NoProfile -Command "if ((Get-Item '%JAR_PATH%').LastWriteTimeUtc -gt (Get-Item '%EXE_JAR%').LastWriteTimeUtc) { 'STALE' }"') do (
+            if "%%R"=="STALE" set "USE_EXE=0"
+        )
+    )
+    if "!USE_EXE!"=="1" (
+        start "" "%EXE_PATH%" %*
+        exit /b 0
+    )
 )
 
-set "JAR_PATH=%ROOT_DIR%\target\MegaBasterd-9.0.0-jar-with-dependencies.jar"
 set "JAVAW_EXE="
 
 if defined JAVA_HOME if exist "%JAVA_HOME%\bin\javaw.exe" (

@@ -271,29 +271,33 @@ public class LinkGrabberDialog extends javax.swing.JDialog implements ClipboardC
         change_dir_button.setText(LabelTranslatorSingleton.getInstance().translate("Selecting folder..."));
         change_dir_button.setEnabled(false);
 
-        javax.swing.JFileChooser filechooser = new javax.swing.JFileChooser();
+        try {
+            javax.swing.JFileChooser filechooser = new javax.swing.JFileChooser();
 
-        updateFonts(filechooser, GUI_FONT, (float) (_main_panel.getZoom_factor() * 1.25));
+            updateFonts(filechooser, GUI_FONT, (float) (_main_panel.getZoom_factor() * 1.25));
 
-        filechooser.setCurrentDirectory(new java.io.File(_download_path));
-        filechooser.setDialogTitle(I18n.tr("ui.filechooser.download_folder"));
-        filechooser.setFileSelectionMode(javax.swing.JFileChooser.DIRECTORIES_ONLY);
-        filechooser.setAcceptAllFileFilterUsed(false);
+            if (_download_path != null && !_download_path.isBlank()) {
+                filechooser.setCurrentDirectory(new java.io.File(_download_path));
+            }
+            filechooser.setDialogTitle(I18n.tr("ui.filechooser.download_folder"));
+            filechooser.setFileSelectionMode(javax.swing.JFileChooser.DIRECTORIES_ONLY);
+            filechooser.setAcceptAllFileFilterUsed(false);
 
-        if (filechooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
+            if (filechooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
 
-            File file = filechooser.getSelectedFile();
+                File file = filechooser.getSelectedFile();
 
-            _download_path = file.getAbsolutePath();
+                _download_path = file.getAbsolutePath();
 
-            download_dir_label.setText(truncateText(_download_path, 80));
+                download_dir_label.setText(truncateText(_download_path, 80));
 
+            }
+        } finally {
+            change_dir_button.setText(LabelTranslatorSingleton.getInstance().translate("Change it"));
+            change_dir_button.setEnabled(true);
+
+            pack();
         }
-
-        change_dir_button.setText(LabelTranslatorSingleton.getInstance().translate("Change it"));
-        change_dir_button.setEnabled(true);
-
-        pack();
     }//GEN-LAST:event_change_dir_buttonActionPerformed
 
     private void dlc_buttonActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_dlc_buttonActionPerformed

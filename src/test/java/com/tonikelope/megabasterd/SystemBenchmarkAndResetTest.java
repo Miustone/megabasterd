@@ -76,4 +76,22 @@ class SystemBenchmarkAndResetTest {
         assertTrue(fallbackCmd.get(0).endsWith("java"));
         assertTrue(fallbackCmd.contains(MainPanel.class.getName()));
     }
+
+    @Test
+    void updateFontsHandlesFileChooserAndFontlessComponentsUnderWinUI3() throws Exception {
+        if (java.awt.GraphicsEnvironment.isHeadless()) {
+            return;
+        }
+        javax.swing.SwingUtilities.invokeAndWait(() -> {
+            WinUI3Theme.apply(false);
+            javax.swing.JFileChooser fc = new javax.swing.JFileChooser();
+            fc.setFileSelectionMode(javax.swing.JFileChooser.DIRECTORIES_ONLY);
+            java.awt.Font font = WinUI3Theme.resolveWin11Font(java.awt.Font.PLAIN, 13);
+            assertDoesNotThrow(() -> MiscTools.updateFonts(fc, font, 1.25f));
+
+            javax.swing.JPanel fontless = new javax.swing.JPanel();
+            fontless.setFont(null);
+            assertDoesNotThrow(() -> MiscTools.updateFonts(fontless, font, 1.0f));
+        });
+    }
 }
