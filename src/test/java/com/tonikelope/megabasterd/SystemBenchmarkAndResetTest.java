@@ -94,4 +94,17 @@ class SystemBenchmarkAndResetTest {
             assertDoesNotThrow(() -> MiscTools.updateFonts(fontless, font, 1.0f));
         });
     }
+
+    @Test
+    void extractMegaLinksHandlesModernSpacesBracketsAndDomains() {
+        String input = String.join("\n",
+                "https://mega.nz/file/AbCd1234#Key+WithPlus/trailing?usp=sharing",
+                "[Movie](https://mega.io/file/EfGh5678#KeyTwo90)",
+                "https://mega.nz/folder/Fold1111#FoldKey1 https://mega.nz/folder/Fold2222#FoldKey2/file/Sub333");
+        String extracted = MiscTools.extractMegaLinksFromString(input);
+        assertTrue(extracted.contains("https://mega.nz/#!AbCd1234!Key+WithPlus"));
+        assertTrue(extracted.contains("https://mega.nz/#!EfGh5678!KeyTwo90"));
+        assertTrue(extracted.contains("https://mega.nz/#F!Fold1111!FoldKey1"));
+        assertTrue(extracted.contains("https://mega.nz/#F*Sub333!Fold2222!FoldKey2"));
+    }
 }

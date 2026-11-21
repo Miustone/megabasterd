@@ -1337,6 +1337,19 @@ public class MiscTools {
 
     }
 
+    private static final String MEGA_LEGACY_URL_REGEX = "(?:https?|mega)://[^\\s#]+(?:#[^\\r\\n!\\s]*?)?![^\\r\\n!\\s]+![^\\?\\r\\n/\\s\"'<>\\)\\]]+";
+
+    private static String safeUrlDecodePreservingPlus(String data) {
+        if (data == null) {
+            return "";
+        }
+        try {
+            return URLDecoder.decode(data.replace("+", "%2B"), "UTF-8");
+        } catch (Exception ex) {
+            return data;
+        }
+    }
+
     public static String extractMegaLinksFromString(String data) {
 
         String res = "";
@@ -1348,12 +1361,7 @@ public class MiscTools {
             }
 
             ArrayList<String> links = new ArrayList<>();
-            String url_decoded;
-            try {
-                url_decoded = URLDecoder.decode(data, "UTF-8");
-            } catch (Exception ex) {
-                url_decoded = data;
-            }
+            String url_decoded = safeUrlDecodePreservingPlus(data);
             ArrayList<String> base64_chunks = findAllRegex("[A-Za-z0-9+/_-]+=*", url_decoded, 0);
             if (!base64_chunks.isEmpty()) {
 
@@ -1363,24 +1371,19 @@ public class MiscTools {
 
                         String clean_data = MiscTools.newMegaLinks2Legacy(new String(Base64.getDecoder().decode(chunk), java.nio.charset.StandardCharsets.UTF_8));
 
-                        String decoded = MiscTools.findFirstRegex("(?:https?|mega)://[^\r\n]+(#[^\r\n!]*?)?![^\r\n!]+![^\\?\r\n/]+", clean_data, 0);
+                        String decoded = MiscTools.findFirstRegex(MEGA_LEGACY_URL_REGEX, clean_data, 0);
 
                         if (decoded != null) {
                             links.add(decoded);
                         }
 
                     } catch (Exception e) {
-                    };
+                    }
                 }
             }
-            try {
-                url_decoded = URLDecoder.decode(data, "UTF-8");
-            } catch (Exception ex) {
-                url_decoded = data;
-            }
             String clean_data = MiscTools.newMegaLinks2Legacy(url_decoded);
-            links.addAll(findAllRegex("(?:https?|mega)://[^\r\n]+(#[^\r\n!]*?)?![^\r\n!]+![^\\?\r\n/]+", clean_data, 0));
-            links.addAll(findAllRegex("mega://e(n|l)c[^\r\n]+", clean_data, 0));
+            links.addAll(findAllRegex(MEGA_LEGACY_URL_REGEX, clean_data, 0));
+            links.addAll(findAllRegex("mega://e(n|l)c[^\\s\\r\\n]+", clean_data, 0));
             res = links.stream().map((s) -> s + "\n").reduce(res, String::concat);
         }
 
@@ -1393,19 +1396,15 @@ public class MiscTools {
 
         if (data != null) {
 
-            try {
-                String clean_data = MiscTools.newMegaLinks2Legacy(URLDecoder.decode(data, "UTF-8"));
+            String clean_data = MiscTools.newMegaLinks2Legacy(safeUrlDecodePreservingPlus(data));
 
-                ArrayList<String> links = findAllRegex("(?:https?|mega)://[^\r\n]+(#[^\r\n!]*?)?![^\r\n!]+![^\\?\r\n/]+", clean_data, 0);
+            ArrayList<String> links = findAllRegex(MEGA_LEGACY_URL_REGEX, clean_data, 0);
 
-                links.addAll(findAllRegex("mega://e(n|l)c[^\r\n]+", clean_data, 0));
+            links.addAll(findAllRegex("mega://e(n|l)c[^\\s\\r\\n]+", clean_data, 0));
 
-                if (links.size() > 0) {
+            if (!links.isEmpty()) {
 
-                    res = links.get(0);
-                }
-            } catch (UnsupportedEncodingException ex) {
-                Logger.getLogger(MiscTools.class.getName()).log(Level.SEVERE, ex.getMessage());
+                res = links.get(0);
             }
         }
 
@@ -2111,18 +2110,30 @@ public class MiscTools {
 
     public static String newMegaLinks2Legacy(String data) {
 
+        if (data == null) {
+            return "";
+        }
+
         data = MiscTools.addBackSlashToLinks(MiscTools.addHTTPSToMegaLinks(data));
 
-        data = data.replaceAll("(?:https://)?mega(?:\\.co)?\\.nz/folder/([^#]+)#([^\r\n/]+)/file/([^\r\n/]+)", "https://mega.nz/#F*$3!$1!$2");
+        String host = "(?:https?://)?(?:www\\.)?mega(?:\\.co)?\\.(?:nz|io)";
+        String idChars = "[^#!\\s/\"'<>\\)\\]\\?]+";
+        String keyChars = "[^\\s/\"'<>\\)\\]\\?]+";
 
-        data = data.replaceAll("(?:https://)?mega(?:\\.co)?\\.nz/folder/([^#]+)#([^\r\n/]+)/folder/([^\r\n/]+)", "https://mega.nz/#F!$1@$3!$2");
+        data = data.replaceAll(host + "/folder/(" + idChars + ")[#!]+(" + keyChars + ")/file/(" + idChars + ")", "https://mega.nz/#F*$3!$1!$2");
 
-        return data.replaceAll("(?:https://)?mega(?:\\.co)?\\.nz/folder/([^#]+)#([^\r\n]+)", "https://mega.nz/#F!$1!$2").replaceAll("(?:https://)?mega(?:\\.co)?\\.nz/file/([^#]+)#([^\r\n]+)", "https://mega.nz/#!$1!$2");
+        data = data.replaceAll(host + "/folder/(" + idChars + ")[#!]+(" + keyChars + ")/folder/(" + idChars + ")", "https://mega.nz/#F!$1@$3!$2");
+
+        data = data.replaceAll(host + "/folder/(" + idChars + ")[#!]+(" + keyChars + ")", "https://mega.nz/#F!$1!$2");
+
+        data = data.replaceAll(host + "/file/(" + idChars + ")[#!]+(" + keyChars + ")", "https://mega.nz/#!$1!$2");
+
+        return data.replaceAll(host + "/#", "https://mega.nz/#");
     }
 
     public static String addHTTPSToMegaLinks(String data) {
 
-        return data.replaceAll("(?<!https?://)mega(?:\\.co)?\\.nz", "https://mega.nz");
+        return data.replaceAll("(?<!https?://)(?:www\\.)?mega(?:\\.co)?\\.(nz|io)", "https://mega.$1");
     }
 
     public static String addBackSlashToLinks(String data) {
@@ -2134,7 +2145,11 @@ public class MiscTools {
     so copying the extension URL from Firefox or Chrome also works as a normal URL */
     public static String extensionURL2NormalLink(String data) {
 
-        String toReplace = data.substring(0, data.indexOf('#') + 1);
+        int idx = data.indexOf('#');
+        if (idx < 0) {
+            return data;
+        }
+        String toReplace = data.substring(0, idx + 1);
 
         return data.replace(toReplace, "https://mega.nz");
     }

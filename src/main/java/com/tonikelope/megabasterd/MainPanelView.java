@@ -1199,15 +1199,20 @@ public final class MainPanelView extends javax.swing.JFrame {
 
             getMain_panel().resumeDownloads();
 
+            final String rawLinksText = dialog.getLinks_textarea().getText();
+            final boolean priorityTop = dialog.getPriority_checkbox().isSelected();
+
             final MainPanelView tthis = this;
 
             Runnable run = () -> {
 
-                String link_data = MiscTools.extractMegaLinksFromString(dialog.getLinks_textarea().getText());
+                try {
 
-                Set<String> urls = new HashSet(findAllRegex("(?:https?|mega)://[^\r\n]+(#[^\r\n!]*?)?![^\r\n!]+![^\\?\r\n/]+", link_data, 0));
+                String link_data = MiscTools.extractMegaLinksFromString(rawLinksText);
 
-                Set<String> megadownloader = new HashSet(findAllRegex("mega://enc[^\r\n]+", link_data, 0));
+                Set<String> urls = new HashSet(findAllRegex("(?:https?|mega)://[^\\s#]+(?:#[^\\r\\n!\\s]*?)?![^\\r\\n!\\s]+![^\\?\\r\\n/\\s\"'<>\\)\\]]+", link_data, 0));
+
+                Set<String> megadownloader = new HashSet(findAllRegex("mega://enc[^\\s\\r\\n]+", link_data, 0));
 
                 megadownloader.forEach((link) -> {
                     try {
@@ -1219,7 +1224,7 @@ public final class MainPanelView extends javax.swing.JFrame {
                     }
                 });
 
-                Set<String> elc = new HashSet(findAllRegex("mega://elc[^\r\n]+", link_data, 0));
+                Set<String> elc = new HashSet(findAllRegex("mega://elc[^\\s\\r\\n]+", link_data, 0));
 
                 elc.forEach((link) -> {
                     try {
@@ -1231,17 +1236,26 @@ public final class MainPanelView extends javax.swing.JFrame {
                     }
                 });
 
-                Set<String> dlc = new HashSet(findAllRegex("dlc://([^\r\n]+)", link_data, 1));
+                Set<String> dlc = new HashSet(findAllRegex("dlc://([^\\s\\r\\n]+)", link_data, 1));
 
-                dlc.stream().map((d) -> CryptTools.decryptDLC(d, _main_panel)).forEachOrdered((links) -> {
-                    links.stream().filter((link) -> (findFirstRegex("(?:https?|mega)://[^\r\n](#[^\r\n!]*?)?![^\r\n!]+![^\\?\r\n/]+", link, 0) != null)).forEachOrdered((link) -> {
-                        urls.add(link);
+                dlc.stream().map((d) -> CryptTools.decryptDLC(d, _main_panel)).filter((links) -> links != null).forEachOrdered((links) -> {
+                    links.stream().filter((link) -> (findFirstRegex("(?:https?|mega)://[^\\s#]+(?:#[^\\r\\n!\\s]*?)?![^\\r\\n!\\s]+![^\\?\\r\\n/\\s\"'<>\\)\\]]+", MiscTools.newMegaLinks2Legacy(link), 0) != null)).forEachOrdered((link) -> {
+                        urls.add(MiscTools.newMegaLinks2Legacy(link).trim());
                     });
                 });
 
+                if (urls.isEmpty()) {
+                    MiscTools.GUIRun(() -> JOptionPane.showMessageDialog(
+                            tthis,
+                            LabelTranslatorSingleton.getInstance().translate("Please, paste a Mega/MegaCrypter/ELC link!"),
+                            "MegaBasterd",
+                            JOptionPane.WARNING_MESSAGE));
+                    return;
+                }
+
                 if (!urls.isEmpty()) {
 
-                    Set<String> folder_file_links = new HashSet(findAllRegex("(?:https?|mega)://[^\r\n]+#F\\*[^\r\n!]*?![^\r\n!]+![^\\?\r\n/]+", link_data, 0));
+                    Set<String> folder_file_links = new HashSet(findAllRegex("(?:https?|mega)://[^\\s#]+#F\\*[^\\r\\n!\\s]*?![^\\r\\n!\\s]+![^\\?\\r\\n/\\s\"'<>\\)\\]]+", link_data, 0));
 
                     getMain_panel().getDownload_manager().getTransference_preprocess_global_queue().addAll(folder_file_links);
 
@@ -1344,7 +1358,7 @@ public final class MainPanelView extends javax.swing.JFrame {
 
                                                 if (!((String) folder_link.get("url")).equals("*")) {
 
-                                                    download = new Download(getMain_panel(), ma, (String) folder_link.get("url"), dl_path, (String) folder_link.get("filename"), (String) folder_link.get("filekey"), (long) folder_link.get("filesize"), null, null, getMain_panel().isUse_slots_down(), false, getMain_panel().isUse_custom_chunks_dir() ? getMain_panel().getCustom_chunks_dir() : null, dialog.getPriority_checkbox().isSelected());
+                                                    download = new Download(getMain_panel(), ma, (String) folder_link.get("url"), dl_path, (String) folder_link.get("filename"), (String) folder_link.get("filekey"), (long) folder_link.get("filesize"), null, null, getMain_panel().isUse_slots_down(), false, getMain_panel().isUse_custom_chunks_dir() ? getMain_panel().getCustom_chunks_dir() : null, priorityTop);
 
                                                     getMain_panel().getDownload_manager().getTransference_provision_queue().add(download);
 
@@ -1393,7 +1407,7 @@ public final class MainPanelView extends javax.swing.JFrame {
                                     }
                                 }
 
-                                download = new Download(getMain_panel(), ma, url, dl_path, null, null, null, null, null, getMain_panel().isUse_slots_down(), false, getMain_panel().isUse_custom_chunks_dir() ? getMain_panel().getCustom_chunks_dir() : null, dialog.getPriority_checkbox().isSelected());
+                                download = new Download(getMain_panel(), ma, url, dl_path, null, null, null, null, null, getMain_panel().isUse_slots_down(), false, getMain_panel().isUse_custom_chunks_dir() ? getMain_panel().getCustom_chunks_dir() : null, priorityTop);
 
                                 getMain_panel().getDownload_manager().getTransference_provision_queue().add(download);
 
@@ -1422,6 +1436,15 @@ public final class MainPanelView extends javax.swing.JFrame {
 
                     }
 
+                }
+
+                } catch (Throwable t) {
+                    LOG.log(SEVERE, "Link preprocessing failed", t);
+                    MiscTools.GUIRun(() -> JOptionPane.showMessageDialog(
+                            tthis,
+                            LabelTranslatorSingleton.getInstance().translate("Error processing links: ") + t.getMessage(),
+                            "Error",
+                            JOptionPane.ERROR_MESSAGE));
                 }
             };
 

@@ -1178,7 +1178,10 @@ public final class MainPanel {
         _default_download_path = selectSettingValue("default_down_dir");
 
         if (_default_download_path == null) {
-            _default_download_path = ".";
+            Path userDownloads = Paths.get(System.getProperty("user.home", "."), "Downloads");
+            _default_download_path = Files.isDirectory(userDownloads)
+                    ? userDownloads.toAbsolutePath().normalize().toString()
+                    : Paths.get(System.getProperty("user.home", ".")).toAbsolutePath().normalize().toString();
         }
 
         String limit_dl_speed = selectSettingValue("limit_download_speed");
