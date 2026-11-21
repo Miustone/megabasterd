@@ -752,10 +752,12 @@ public class Download implements Transference, Runnable, SecureSingleThreadNotif
 
         try {
 
+            _file_name = _file_name != null ? _file_name.replaceAll("^[\\\\/]+", "") : "";
             java.nio.file.Path baseDir = Paths.get(_download_path).toAbsolutePath().normalize();
             java.nio.file.Path finalTarget = baseDir.resolve(_file_name).normalize();
-            if (!finalTarget.startsWith(baseDir)) {
+            if (_file_name.isEmpty() || !finalTarget.startsWith(baseDir) || finalTarget.equals(baseDir)) {
                 _status_error = "SECURITY ERROR: Invalid file path!";
+                LOG.log(Level.WARNING, "Rejected download path base={0} file={1} resolved={2}", new Object[]{baseDir, _file_name, finalTarget});
                 _auto_retry_on_error = false;
                 _exit = true;
             }
@@ -1345,6 +1347,9 @@ public class Download implements Transference, Runnable, SecureSingleThreadNotif
             _progress_watchdog_lock.notifyAll();
         }
 
+        if (_status_error != null) {
+            LOG.log(Level.WARNING, "{0} {1} Downloader exiting with error: {2}", new Object[]{Thread.currentThread().getName(), _file_name, _status_error});
+        }
         LOG.log(Level.INFO, "{0}{1} Downloader: bye bye", new Object[]{Thread.currentThread().getName(), _file_name});
     }
 

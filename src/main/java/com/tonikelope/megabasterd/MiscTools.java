@@ -1299,10 +1299,14 @@ public class MiscTools {
 
     public static String cleanFilePath(String path) {
 
-        // See cleanFilename for the dot-collapse rationale. Slashes are kept
-        // here (this is a relative path), and collapsing "../foo" to "./foo"
-        // still resolves harmlessly inside the download base directory.
-        return !path.equals(".") ? ((IS_WINDOWS ? path.replaceAll("[<>:\"\\|\\?\\*\t]+", "") : path).replaceAll(" +\\" + File.separator, "\\" + File.separator).replaceAll("\\.{2,}", ".").replaceAll("[\\x00-\\x1F]", "").trim()) : path;
+        if (path == null) {
+            return "";
+        }
+        // Relative folder/file path inside the download directory: strip leading
+        // separators (otherwise Windows Path.resolve treats "\foo" as drive-root
+        // relative) and collapse dot runs.
+        String stripped = path.replaceAll("^[\\\\/]+", "");
+        return !stripped.equals(".") ? ((IS_WINDOWS ? stripped.replaceAll("[<>:\"\\|\\?\\*\t]+", "") : stripped).replaceAll(" +\\" + File.separator, "\\" + File.separator).replaceAll("\\.{2,}", ".").replaceAll("[\\x00-\\x1F]", "").trim()) : stripped;
     }
 
     public static byte[] genRandomByteArray(int length) {

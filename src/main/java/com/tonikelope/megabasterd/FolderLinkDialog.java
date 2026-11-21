@@ -738,7 +738,7 @@ public class FolderLinkDialog extends javax.swing.JDialog {
                             path += File.separator + ((Map<String, Object>) p).get("name");
                         }
 
-                        path = path.replaceAll("^/+", "").replaceAll("^\\+", "").trim();
+                        path = path.replaceAll("^[\\\\/]+", "").trim();
 
                         String url = "https://mega.nz/#N!" + ((Map<String, Object>) node.getUserObject()).get("h") + "!" + ((Map<String, Object>) node.getUserObject()).get("key") + "###n=" + folder_id;
 
@@ -765,7 +765,7 @@ public class FolderLinkDialog extends javax.swing.JDialog {
                             path += File.separator + ((Map<String, Object>) p).get("name");
                         }
 
-                        path = path.replaceAll("^/+", "").replaceAll("^\\+", "").trim();
+                        path = path.replaceAll("^[\\\\/]+", "").trim();
 
                         HashMap<String, Object> download_link = new HashMap<>();
 

@@ -107,4 +107,14 @@ class SystemBenchmarkAndResetTest {
         assertTrue(extracted.contains("https://mega.nz/#F!Fold1111!FoldKey1"));
         assertTrue(extracted.contains("https://mega.nz/#F*Sub333!Fold2222!FoldKey2"));
     }
+
+    @Test
+    void cleanFilePathStripsLeadingSeparatorsSoWindowsResolveStaysInsideBaseDir(@TempDir Path baseDir) {
+        String cleaned = MiscTools.cleanFilePath("\\Puddingnice\\PICS\\img1.jpg");
+        assertFalse(cleaned.startsWith("\\"));
+        assertFalse(cleaned.startsWith("/"));
+        Path resolved = baseDir.toAbsolutePath().normalize().resolve(cleaned).normalize();
+        assertTrue(resolved.startsWith(baseDir.toAbsolutePath().normalize()));
+        assertEquals("Puddingnice", baseDir.toAbsolutePath().normalize().relativize(resolved).getName(0).toString());
+    }
 }
