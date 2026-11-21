@@ -237,6 +237,36 @@ public class DBTools {
         throw last_ex != null ? last_ex : new SQLException("insertDownload exhausted retries");
     }
 
+    /**
+     * Inserts or updates a download row by URL without a delete+insert gap,
+     * preserving the existing filename when resuming across restarts.
+     */
+    public static synchronized String upsertDownloadReturningName(String url, String email, String path, String filename, String filekey, Long size, String filepass, String filenoexpire, String custom_chunks_dir) throws SQLException {
+        try (Connection conn = SqliteSingleton.getInstance().getConn(); PreparedStatement sel = conn.prepareStatement("SELECT filename FROM downloads WHERE url=?")) {
+            sel.setString(1, url);
+            try (ResultSet rs = sel.executeQuery()) {
+                if (rs.next()) {
+                    String existingName = rs.getString("filename");
+                    String chosenName = (filename != null && !filename.isEmpty()) ? filename : existingName;
+                    try (PreparedStatement upd = conn.prepareStatement("UPDATE downloads SET email=?, path=?, filename=?, filekey=?, filesize=?, filepass=?, filenoexpire=?, custom_chunks_dir=? WHERE url=?")) {
+                        upd.setString(1, email);
+                        upd.setString(2, path);
+                        upd.setString(3, chosenName);
+                        upd.setString(4, filekey);
+                        upd.setLong(5, size);
+                        upd.setString(6, filepass);
+                        upd.setString(7, filenoexpire);
+                        upd.setString(8, custom_chunks_dir);
+                        upd.setString(9, url);
+                        upd.executeUpdate();
+                    }
+                    return chosenName;
+                }
+            }
+        }
+        return insertDownloadReturningName(url, email, path, filename, filekey, size, filepass, filenoexpire, custom_chunks_dir);
+    }
+
     private static String _appendSuffix(String filename, String suffix) {
         if (filename == null) {
             return suffix;

@@ -1,24 +1,33 @@
-<h1>MegaBasterd</h1>
+# MegaBasterd (Modernized Java 25 LTS / WinUI 3 Fork)
 
-[![Maintenance](https://img.shields.io/badge/Maintained%3F-yes-green.svg)](https://GitHub.com/Naereen/StrapDown.js/graphs/commit-activity) [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+Unofficial cross-platform MEGA downloader / uploader / streaming suite — modernized on **Java 25 LTS**, **Windows 11 WinUI 3** styling (FlatLaf 3.6), virtual threads, pooled `HttpClient`, crash-safe chunk resume, and hardware/network auto-tuning.
 
-<p align="center"><i>"If it compiles, it's good; if it boots up, it's perfect." (Linus Torvalds)</i></p>
-<p align="center"><a href="https://github.com/tonikelope/megabasterd/releases/latest" target="_blank"><img src="https://raw.githubusercontent.com/tonikelope/megabasterd/master/src/main/resources/images/mbasterd_logo_git.png"></a></p>
-<h2 align="center"><a href="https://github.com/tonikelope/megabasterd/releases/latest" target="_blank"><b>Download latest build</b></a></h2>
-<h3 align="center"><i>Note: MegaBasterd jar version requires <a href="https://adoptium.net/es/temurin/releases/?version=11" target="_blank">Java 8 or later</a>.</i></h3>
-<p align="center"><a href="https://github.com/tonikelope/megabasterd/releases/latest" target="_blank"><img src="https://raw.githubusercontent.com/tonikelope/megabasterd/master/src/main/resources/images/linux-mac-windows.png"></a></p>
-<p align="center"><a href="https://github.com/tonikelope/megabasterd/issues/397"><b>Would you like to help by translating MegaBasterd into your favorite language?</b></a></p>
+## What Was Fixed & Modernized
 
+- **Java 25 LTS & Clean Supply Chain**: Upgraded from Java 8 to **Java 25 LTS** with Maven Wrapper (`./mvnw`). Removed obsolete native Xuggler (`xuggle-xuggler-server-all` snapshot) and `jaxb-api` dependencies; video thumbnails optionally use external `ffmpeg` when present.
+- **Windows 11 (WinUI 3) Design**: Replaced the legacy Nimbus look-and-feel with **FlatLaf 3.6** Windows 11 native window decorations, rounded cards & controls, WinUI 3 accent colors, Segoe UI Variable typography, and Light/Dark support.
+- **Fast, Reliable Downloads & True Restart Resume**:
+  - Pooled `java.net.http.HttpClient` + Java 25 **Virtual Threads**.
+  - Direct positional `FileChannel` streaming into `.mbpart` + atomic `.mbstate` chunk bitset & 1 MiB sub-chunk MACs (zero double disk writes, zero per-chunk `fsync()` stalls, instant <5 ms integrity verification).
+  - Resuming across app restarts skips already-downloaded chunks **before** hitting MEGA's servers, preserves all pending/retrying queues on exit, and migrates legacy `.mctemp` files automatically.
+  - Fixed false *"NO DISK SPACE AVAILABLE"* errors on uncreated subdirectories (`#779` / `#677`) and expired-URL `403` loops.
+- **Startup PC & Internet Auto-Tuning (`SystemBenchmark`)**:
+  - Measures CPU cores, system RAM, AES-CTR throughput, disk write speed, and a tiny quota-safe network probe (<512 KB) to scale concurrency & buffers for High-End PCs while respecting MEGA-safe connection caps and adaptive 429/509 throttling.
+- **Factory Reset Button (`ResetManager`)**:
+  - Complete 1-click wipe of all MegaBasterd databases, accounts, sessions, logs, caches, and temp folders (with optional deletion of tracked downloaded files) + clean fresh restart.
+- **Security & Stability Fixes**:
+  - Fixed `SmartProxy` settings save & *"Save working proxies"* textarea sync (`#798`, `#799`).
+  - Added rotating 10 MB debug logs (`#800`), crash-safe SQLite `synchronous=NORMAL`, non-intrusive `ClipboardSpy`, bulk `UploadMACGenerator`, `ObjectInputFilter` deserialization guards, MegaCrypter post-decrypt path-traversal guard, and authenticated `KissVideoStreamServer` (`#788`).
 
-![Screnshot](/src/main/resources/images/mbasterd_screen.png)
+## Build & Run
 
+Requires **Java 25 LTS** (no global Maven install required thanks to `./mvnw`):
 
+```bash
+./mvnw test package
+java -jar target/MegaBasterd-9.0.0-jar-with-dependencies.jar
+```
 
+## Disclaimer
 
-<p align="center"><a href="https://youtu.be/5TkBXT7osQI"><b>MegaBasterd DEMO</b></a></p>
-
-<p align="center"><img src="https://raw.githubusercontent.com/tonikelope/megabasterd/master/coffee.png"><br><img src="https://raw.githubusercontent.com/tonikelope/megabasterd/master/src/main/resources/images/ethereum_toni.png"></p>
-
-<p align="center"><a href="https://github.com/tonikelope/megabasterd/issues/385#issuecomment-1019215670">BONUS: Why the f*ck has MegaBasterd stopped downloading?</a></p>
-
-<p align="center"><b>IMPORTANT:</b> You are not authorized to use MegaBasterd in any way that violates <a href="https://mega.io/es/terms"><b>MEGA's terms of use</b></a>.</p>
+You are not authorized to use MegaBasterd in any way that violates [MEGA's terms of use](https://mega.io/terms).

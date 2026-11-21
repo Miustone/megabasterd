@@ -11,42 +11,45 @@ package com.tonikelope.megabasterd;
 
 import static java.awt.Toolkit.getDefaultToolkit;
 import java.awt.datatransfer.Clipboard;
-import java.awt.datatransfer.ClipboardOwner;
+import java.awt.datatransfer.DataFlavor;
 import java.awt.datatransfer.Transferable;
-import static java.lang.Thread.sleep;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
-import static java.util.logging.Level.SEVERE;
 import java.util.logging.Logger;
 
 /**
- *
- * @author tonikelope
+ * Non-intrusive clipboard monitor: polls on a background daemon thread only
+ * when at least one observer is attached and never steals clipboard ownership.
  */
-public class ClipboardSpy implements Runnable, ClipboardOwner, SecureSingleThreadNotifiable, ClipboardChangeObservable {
+public class ClipboardSpy implements Runnable, ClipboardChangeObservable {
 
-    private static final int SLEEP = 250;
+    private static final int POLL_INTERVAL_MS = 400;
     private static final Logger LOG = Logger.getLogger(ClipboardSpy.class.getName());
 
     private final Clipboard _sysClip;
-
-    private volatile boolean _notified;
-
     private final ConcurrentLinkedQueue<ClipboardChangeObserver> _observers;
-
-    private Transferable _contents;
-
-    private final Object _secure_notify_lock;
-
+    private final ScheduledExecutorService _scheduler;
+    private volatile ScheduledFuture<?> _pollTask;
+    private volatile Transferable _contents;
+    private volatile String _lastText;
     private volatile boolean _enabled;
 
     public ClipboardSpy() {
         _sysClip = getDefaultToolkit().getSystemClipboard();
-        _notified = false;
         _enabled = false;
         _contents = null;
-        _secure_notify_lock = new Object();
+        _lastText = null;
         _observers = new ConcurrentLinkedQueue<>();
+        _scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "ClipboardSpy-Poller");
+            t.setDaemon(true);
+            return t;
+        });
     }
 
     @Override
@@ -54,159 +57,81 @@ public class ClipboardSpy implements Runnable, ClipboardOwner, SecureSingleThrea
         return _contents;
     }
 
-    private void _setEnabled(boolean enabled) {
-
+    private synchronized void _setEnabled(boolean enabled) {
         _enabled = enabled;
-
-        boolean monitor_clipboard = true;
-
-        String monitor_clipboard_string = DBTools.selectSettingValue("clipboardspy");
-
-        if (monitor_clipboard_string != null) {
-            monitor_clipboard = monitor_clipboard_string.equals("yes");
+        boolean monitorClipboard = true;
+        String monitorClipboardString = DBTools.selectSettingValue("clipboardspy");
+        if (monitorClipboardString != null) {
+            monitorClipboard = monitorClipboardString.equals("yes");
         }
 
-        if (_enabled && monitor_clipboard) {
-
-            _contents = getClipboardContents();
-
-            notifyChangeToMyObservers();
-
-            gainOwnership(_contents);
-
-            LOG.log(Level.INFO, "{0} Monitoring clipboard ON...", Thread.currentThread().getName());
-
-        } else if (monitor_clipboard) {
-            LOG.log(Level.INFO, "{0} Monitoring clipboard OFF...", Thread.currentThread().getName());
-        }
-    }
-
-    @Override
-    public void secureNotify() {
-        synchronized (_secure_notify_lock) {
-
-            _notified = true;
-
-            _secure_notify_lock.notify();
-        }
-    }
-
-    @Override
-    public void secureWait() {
-
-        synchronized (_secure_notify_lock) {
-            while (!_notified) {
-
-                try {
-                    _secure_notify_lock.wait(1000);
-                } catch (InterruptedException ex) {
-                    Thread.currentThread().interrupt();
-                    LOG.log(Level.FINE, "secureWait interrupted");
-                    return;
-                }
+        if (_enabled && monitorClipboard) {
+            _lastText = readClipboardTextSafely();
+            if (_pollTask == null || _pollTask.isCancelled()) {
+                _pollTask = _scheduler.scheduleWithFixedDelay(
+                        this::pollOnce, POLL_INTERVAL_MS, POLL_INTERVAL_MS, TimeUnit.MILLISECONDS);
             }
-
-            _notified = false;
+            LOG.log(Level.INFO, "Monitoring clipboard ON...");
+        } else {
+            if (_pollTask != null) {
+                _pollTask.cancel(false);
+                _pollTask = null;
+            }
+            if (monitorClipboard) {
+                LOG.log(Level.INFO, "Monitoring clipboard OFF...");
+            }
         }
+    }
+
+    private void pollOnce() {
+        if (!_enabled) {
+            return;
+        }
+        String current = readClipboardTextSafely();
+        if (current != null && !Objects.equals(current, _lastText)) {
+            _lastText = current;
+            notifyChangeToMyObservers();
+        }
+    }
+
+    private String readClipboardTextSafely() {
+        try {
+            Transferable t = _sysClip.getContents(null);
+            _contents = t;
+            if (t != null && t.isDataFlavorSupported(DataFlavor.stringFlavor)) {
+                return (String) t.getTransferData(DataFlavor.stringFlavor);
+            }
+        } catch (IllegalStateException busy) {
+            // Clipboard temporarily locked by another app; skip this tick without blocking EDT.
+        } catch (Exception ex) {
+            LOG.log(Level.FINE, "Clipboard read skipped: {0}", ex.getMessage());
+        }
+        return null;
+    }
+
+    public void secureNotify() {
+        // Kept for call-site compatibility.
     }
 
     @Override
     public void run() {
-
-        secureWait();
-    }
-
-    @Override
-    public void lostOwnership(Clipboard c, Transferable t) {
-
-        if (_enabled) {
-
-            _contents = getClipboardContents();
-
-            notifyChangeToMyObservers();
-
-            gainOwnership(_contents);
-        }
-    }
-
-    private Transferable getClipboardContents() {
-
-        boolean error;
-
-        Transferable c = null;
-
-        do {
-            error = false;
-
-            try {
-
-                c = _sysClip.getContents(this);
-
-            } catch (Exception ex) {
-
-                error = true;
-
-                try {
-                    sleep(SLEEP);
-                } catch (InterruptedException ex1) {
-                    LOG.log(SEVERE, ex1.getMessage());
-                }
-            }
-
-        } while (error);
-
-        return c;
-    }
-
-    private void gainOwnership(Transferable t) {
-
-        boolean error;
-
-        do {
-            error = false;
-
-            try {
-
-                _sysClip.setContents(t, this);
-
-            } catch (Exception ex) {
-
-                error = true;
-
-                try {
-                    sleep(SLEEP);
-                } catch (InterruptedException ex1) {
-                    LOG.log(SEVERE, ex1.getMessage());
-                }
-            }
-
-        } while (error);
-
+        // Polling runs on _scheduler while enabled.
     }
 
     @Override
     public void attachObserver(ClipboardChangeObserver observer) {
-
         if (!_observers.contains(observer)) {
-
             _observers.add(observer);
         }
-
         if (!_observers.isEmpty() && !_enabled) {
-
             _setEnabled(true);
         }
     }
 
     @Override
     public void detachObserver(ClipboardChangeObserver observer) {
-
-        if (_observers.contains(observer)) {
-
-            _observers.remove(observer);
-
+        if (_observers.remove(observer)) {
             if (_observers.isEmpty() && _enabled) {
-
                 _setEnabled(false);
             }
         }
@@ -214,10 +139,6 @@ public class ClipboardSpy implements Runnable, ClipboardOwner, SecureSingleThrea
 
     @Override
     public void notifyChangeToMyObservers() {
-
-        _observers.forEach((o) -> {
-            o.notifyClipboardChange();
-        });
+        _observers.forEach(ClipboardChangeObserver::notifyClipboardChange);
     }
-
 }

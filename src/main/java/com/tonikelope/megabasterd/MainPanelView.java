@@ -603,10 +603,40 @@ public final class MainPanelView extends javax.swing.JFrame {
                 getAuto_close_menu().setSelected(false);
             }
 
+            // WinUI 3 styling & File > Reset menu item
+            WinUI3Theme.stylePrimaryButton(new_download_button);
+            WinUI3Theme.stylePrimaryButton(new_upload_button);
+            WinUI3Theme.stylePrimaryButton(unfreeze_transferences_button);
+            WinUI3Theme.applyScrollBarTuning(this);
+
+            javax.swing.JMenuItem reset_tool_menu = new javax.swing.JMenuItem(I18n.tr("ui.menu.reset_tool"));
+            reset_tool_menu.setFont(new java.awt.Font(GUI_FONT.getFamily(), java.awt.Font.PLAIN, Math.round(16 * _main_panel.getZoom_factor())));
+            reset_tool_menu.setIcon(new javax.swing.ImageIcon(getClass().getResource("/images/icons8-trash-can-30.png")));
+            reset_tool_menu.addActionListener(evt -> ResetManager.showResetDialog(_main_panel, this));
+            int exitIndex = Math.max(0, file_menu.getItemCount() - 1);
+            file_menu.insert(reset_tool_menu, exitIndex);
+
             pack();
         });
 
         INSTANCE = this;
+    }
+
+    public void updateBenchmarkStatus(final SystemBenchmark.AutoTuningProfile profile) {
+        if (profile == null) {
+            return;
+        }
+        MiscTools.GUIRun(() -> {
+            String badge = "Profile: " + profile.getTier().getLabel()
+                    + " (" + profile.getCpuCores() + "C"
+                    + (profile.getEstimatedMbps() > 0 ? String.format(" / %.0f Mbps", profile.getEstimatedMbps()) : "")
+                    + ")";
+            memory_status.setToolTipText("<html>" + profile.toSummaryString() + "<br>" + I18n.tr("ui.statusbar.jvm_ram.tooltip") + "</html>");
+            if (kiss_server_status.getText() == null || !kiss_server_status.getText().contains("Profile:")) {
+                kiss_server_status.setToolTipText(profile.toSummaryString());
+            }
+            smart_proxy_status.setToolTipText(badge);
+        });
     }
 
     /**

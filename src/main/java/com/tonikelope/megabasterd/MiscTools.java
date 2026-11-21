@@ -110,8 +110,6 @@ import javax.swing.tree.DefaultTreeModel;
 import javax.swing.tree.MutableTreeNode;
 import javax.swing.tree.TreeNode;
 import javax.swing.tree.TreePath;
-import javax.xml.bind.DatatypeConverter;
-import javax.xml.bind.annotation.adapters.HexBinaryAdapter;
 
 /**
  *
@@ -159,7 +157,7 @@ public class MiscTools {
                     digest.update(buffer, 0, n);
                 }
             }
-            return new HexBinaryAdapter().marshal(digest.digest()).toLowerCase().trim();
+            return java.util.HexFormat.of().formatHex(digest.digest());
         } catch (NoSuchAlgorithmException ex) {
             Logger.getLogger(MiscTools.class.getName()).log(Level.SEVERE, null, ex);
         }
@@ -315,42 +313,7 @@ public class MiscTools {
     }
 
     public static void setNimbusLookAndFeel(boolean dark) {
-
-        try {
-            for (javax.swing.UIManager.LookAndFeelInfo info : javax.swing.UIManager.getInstalledLookAndFeels()) {
-
-                if ("Nimbus".equals(info.getName())) {
-
-                    javax.swing.UIManager.setLookAndFeel(info.getClassName());
-
-                    if (dark) {
-                        // Dark LAF
-                        UIManager.put("control", new Color(128, 128, 128));
-                        UIManager.put("info", new Color(128, 128, 128));
-                        UIManager.put("nimbusBase", new Color(18, 30, 49));
-                        UIManager.put("nimbusAlertYellow", new Color(248, 187, 0));
-                        UIManager.put("nimbusDisabledText", new Color(100, 100, 100));
-                        UIManager.put("nimbusFocus", new Color(115, 164, 209));
-                        UIManager.put("nimbusGreen", new Color(176, 179, 50));
-                        UIManager.put("nimbusInfoBlue", new Color(66, 139, 221));
-                        UIManager.put("nimbusLightBackground", new Color(18, 30, 49));
-                        UIManager.put("nimbusOrange", new Color(191, 98, 4));
-                        UIManager.put("nimbusRed", new Color(169, 46, 34));
-                        UIManager.put("nimbusSelectedText", new Color(255, 255, 255));
-                        UIManager.put("nimbusSelectionBackground", new Color(104, 93, 156));
-                        UIManager.put("text", new Color(230, 230, 230));
-
-                    } else {
-                        UIDefaults defaults = UIManager.getLookAndFeelDefaults();
-                        defaults.put("nimbusOrange", defaults.get("nimbusFocus"));
-                    }
-
-                    break;
-                }
-            }
-        } catch (Exception ex) {
-            java.util.logging.Logger.getLogger(MiscTools.class.getName()).log(java.util.logging.Level.SEVERE, ex.getMessage());
-        }
+        WinUI3Theme.apply(dark);
     }
 
     public static int[] bin2i32a(byte[] bin) {
@@ -798,7 +761,46 @@ public class MiscTools {
     }
 
     public static byte[] hex2bin(String s) {
-        return DatatypeConverter.parseHexBinary(s);
+        return java.util.HexFormat.of().parseHex(s);
+    }
+
+    /**
+     * Resolves usable disk space for {@code targetDir} by walking up to the
+     * nearest existing ancestor directory before querying {@link java.nio.file.FileStore}
+     * (with {@link File#getUsableSpace()} fallback). Prevents false "No disk space"
+     * errors when target subfolders have not yet been created or on filesystems
+     * where {@code Files.getFileStore} behaves unexpectedly (#779 / #677).
+     */
+    public static long getAvailableDiskSpace(java.nio.file.Path targetDir) {
+        try {
+            java.nio.file.Path probe = targetDir != null ? targetDir.toAbsolutePath().normalize() : java.nio.file.Paths.get(".").toAbsolutePath().normalize();
+            while (probe != null && !java.nio.file.Files.exists(probe)) {
+                probe = probe.getParent();
+            }
+            if (probe != null) {
+                long usable = java.nio.file.Files.getFileStore(probe).getUsableSpace();
+                if (usable > 0) {
+                    return usable;
+                }
+                long fileUsable = probe.toFile().getUsableSpace();
+                if (fileUsable > 0) {
+                    return fileUsable;
+                }
+            }
+        } catch (Exception ex) {
+            LOG.log(Level.WARNING, "Disk space query failed for {0}: {1}", new Object[]{targetDir, ex.getMessage()});
+        }
+        return Long.MAX_VALUE;
+    }
+
+    public static java.io.ObjectInputFilter createSafeMegaApiFilter() {
+        return java.io.ObjectInputFilter.Config.createFilter(
+                "com.tonikelope.megabasterd.MegaAPI;com.tonikelope.megabasterd.MegaAPI$*;java.math.BigInteger;java.lang.*;java.util.*;!*");
+    }
+
+    public static java.io.ObjectInputFilter createSafeSettingsFilter() {
+        return java.io.ObjectInputFilter.Config.createFilter(
+                "java.util.HashMap;java.util.LinkedHashMap;java.util.ArrayList;java.lang.*;!*");
     }
 
     public static void copyTextToClipboard(String text) {
@@ -1984,7 +1986,7 @@ public class MiscTools {
                             ByteArrayInputStream bs = new ByteArrayInputStream(CryptTools.aes_cbc_decrypt_at_rest((byte[]) old_session_data.get("ma"), main_panel.getMaster_pass()));
 
                             try (ObjectInputStream is = new ObjectInputStream(bs)) {
-
+                                is.setObjectInputFilter(createSafeMegaApiFilter());
                                 old_ma = (MegaAPI) is.readObject();
 
                             } catch (Exception ex) {
@@ -1996,6 +1998,7 @@ public class MiscTools {
                             ByteArrayInputStream bs = new ByteArrayInputStream((byte[]) old_session_data.get("ma"));
 
                             try (ObjectInputStream is = new ObjectInputStream(bs)) {
+                                is.setObjectInputFilter(createSafeMegaApiFilter());
                                 old_ma = (MegaAPI) is.readObject();
                             } catch (Exception ex) {
                                 unserialization_error = true;

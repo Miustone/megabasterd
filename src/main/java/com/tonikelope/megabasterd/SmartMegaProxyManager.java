@@ -788,29 +788,49 @@ public final class SmartMegaProxyManager {
         }
     }
 
+    public static String[] getProxyAuthCredentials(String hostPort) {
+        if (hostPort == null) {
+            return null;
+        }
+        String authData = PROXY_LIST_AUTH.get(hostPort);
+        if (authData == null) {
+            return null;
+        }
+        String[] parts = authData.split(":");
+        if (parts.length < 2) {
+            return null;
+        }
+        return new String[]{
+            new String(MiscTools.BASE642Bin(parts[0]), java.nio.charset.StandardCharsets.UTF_8),
+            new String(MiscTools.BASE642Bin(parts[1]), java.nio.charset.StandardCharsets.UTF_8)
+        };
+    }
+
     public static class SmartProxyAuthenticator extends Authenticator {
 
         @Override
         protected PasswordAuthentication getPasswordAuthentication() {
-
+            if (getRequestorType() != RequestorType.PROXY) {
+                return null;
+            }
             InetAddress ipaddr = getRequestingSite();
+            String host = getRequestingHost();
             int port = getRequestingPort();
 
-            String auth_data;
+            String auth_data = null;
+            if (ipaddr != null) {
+                auth_data = PROXY_LIST_AUTH.get(ipaddr.getHostAddress() + ":" + port);
+            }
+            if (auth_data == null && host != null) {
+                auth_data = PROXY_LIST_AUTH.get(host + ":" + port);
+            }
 
-            if ((auth_data = PROXY_LIST_AUTH.get(ipaddr.getHostAddress() + ":" + String.valueOf(port))) != null) {
-
-                try {
-                    String[] auth_data_parts = auth_data.split(":");
-
-                    String user = new String(MiscTools.BASE642Bin(auth_data_parts[0]), "UTF-8");
-
-                    String password = new String(MiscTools.BASE642Bin(auth_data_parts[1]), "UTF-8");
-
+            if (auth_data != null) {
+                String[] auth_data_parts = auth_data.split(":");
+                if (auth_data_parts.length >= 2) {
+                    String user = new String(MiscTools.BASE642Bin(auth_data_parts[0]), java.nio.charset.StandardCharsets.UTF_8);
+                    String password = new String(MiscTools.BASE642Bin(auth_data_parts[1]), java.nio.charset.StandardCharsets.UTF_8);
                     return new PasswordAuthentication(user, password.toCharArray());
-
-                } catch (UnsupportedEncodingException ex) {
-                    Logger.getLogger(SmartMegaProxyManager.class.getName()).log(Level.SEVERE, null, ex);
                 }
             }
 

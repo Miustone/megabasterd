@@ -867,7 +867,7 @@ abstract public class TransferenceManager implements Runnable, SecureSingleThrea
 
                 THREAD_POOL.execute(() -> {
 
-                    ExecutorService executor = Executors.newFixedThreadPool(MAX_PROVISION_WORKERS);
+                    ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
 
                     BoundedExecutor bounded_executor = new BoundedExecutor(executor, MAX_PROVISION_WORKERS);
 

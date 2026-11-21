@@ -52,6 +52,8 @@ public class KissVideoStreamServer implements HttpHandler, SecureSingleThreadNot
     private final ContentType _ctype;
     private volatile boolean _notified;
     private final Object _secure_notify_lock;
+    private volatile HttpServer _httpServer;
+    private final String _authToken;
 
     public KissVideoStreamServer(MainPanel panel) {
         _main_panel = panel;
@@ -60,7 +62,20 @@ public class KissVideoStreamServer implements HttpHandler, SecureSingleThreadNot
         _ctype = new ContentType();
         _notified = false;
         _secure_notify_lock = new Object();
+        byte[] tok = new byte[16];
+        new java.security.SecureRandom().nextBytes(tok);
+        _authToken = java.util.HexFormat.of().formatHex(tok);
+    }
 
+    public String getAuthToken() {
+        return _authToken;
+    }
+
+    public synchronized void stopServer() {
+        if (_httpServer != null) {
+            _httpServer.stop(0);
+            _httpServer = null;
+        }
     }
 
     public MainPanel getMain_panel() {
@@ -112,13 +127,13 @@ public class KissVideoStreamServer implements HttpHandler, SecureSingleThreadNot
 
         _main_panel.getView().updateKissStreamServerStatus(LabelTranslatorSingleton.getInstance().translate("Streaming server: ON (port ") + STREAMER_PORT + ")");
 
-        HttpServer httpserver = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), port), 0);
+        _httpServer = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), port), 0);
 
-        httpserver.createContext(context, this);
+        _httpServer.createContext(context, this);
 
-        httpserver.setExecutor(THREAD_POOL);
+        _httpServer.setExecutor(THREAD_POOL);
 
-        httpserver.start();
+        _httpServer.start();
     }
 
     private void _updateStatus(Integer status) {
@@ -330,15 +345,46 @@ public class KissVideoStreamServer implements HttpHandler, SecureSingleThreadNot
 
             Headers reqheaders = xchg.getRequestHeaders();
 
+            String hostHeader = reqheaders.getFirst("Host");
+            if (hostHeader == null || !(hostHeader.startsWith("localhost:") || hostHeader.equals("localhost")
+                    || hostHeader.startsWith("127.0.0.1:") || hostHeader.equals("127.0.0.1"))) {
+                xchg.sendResponseHeaders(403, -1);
+                return;
+            }
+
             Headers resheaders = xchg.getResponseHeaders();
 
             String url_path = xchg.getRequestURI().getPath();
+            int videoIdx = url_path.indexOf("/video/");
+            if (videoIdx < 0) {
+                xchg.sendResponseHeaders(404, -1);
+                return;
+            }
+
+            String remainder = url_path.substring(videoIdx + 7);
+            int slashIdx = remainder.indexOf('/');
+            if (slashIdx <= 0 || slashIdx >= remainder.length() - 1) {
+                xchg.sendResponseHeaders(403, -1);
+                return;
+            }
+            String reqToken = remainder.substring(0, slashIdx);
+            if (!java.security.MessageDigest.isEqual(
+                    reqToken.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    _authToken.getBytes(java.nio.charset.StandardCharsets.UTF_8))) {
+                xchg.sendResponseHeaders(403, -1);
+                return;
+            }
+            String encodedPayload = remainder.substring(slashIdx + 1);
 
             String mega_account;
 
             String link;
 
-            String[] url_parts = new String(UrlBASE642Bin(url_path.substring(url_path.indexOf("/video/") + 7)), "UTF-8").split("\\|");
+            String[] url_parts = new String(UrlBASE642Bin(encodedPayload), "UTF-8").split("\\|", 2);
+            if (url_parts.length < 2) {
+                xchg.sendResponseHeaders(400, -1);
+                return;
+            }
 
             mega_account = url_parts[0];
 
@@ -479,11 +525,18 @@ public class KissVideoStreamServer implements HttpHandler, SecureSingleThreadNot
                         ranges[0] = 0;
                     }
 
-                    sync_bytes = (int) ranges[0] % 16;
+                    if (ranges[0] >= file_size) {
+                        xchg.sendResponseHeaders(416, -1);
+                        return;
+                    }
+
+                    sync_bytes = (int) (ranges[0] % 16);
 
                     if (ranges[1] >= 0 && ranges[1] >= ranges[0]) {
 
-                        clength = ranges[1] - ranges[0] + 1;
+                        long end = Math.min(ranges[1], file_size - 1);
+                        clength = end - ranges[0] + 1;
+                        ranges[1] = end;
 
                     } else {
 
@@ -522,7 +575,18 @@ public class KissVideoStreamServer implements HttpHandler, SecureSingleThreadNot
 
                 os = xchg.getResponseBody();
 
-                cis.skip(sync_bytes);
+                int toSkip = sync_bytes;
+                while (toSkip > 0) {
+                    long skipped = cis.skip(toSkip);
+                    if (skipped <= 0) {
+                        if (cis.read() == -1) {
+                            break;
+                        }
+                        toSkip--;
+                    } else {
+                        toSkip -= (int) skipped;
+                    }
+                }
 
                 while ((reads = cis.read(buffer)) != -1) {
 

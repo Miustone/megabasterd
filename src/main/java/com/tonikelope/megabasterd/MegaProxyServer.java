@@ -133,8 +133,9 @@ public class MegaProxyServer implements Runnable {
 
     public static class Handler implements Runnable {
 
-        public static final Pattern CONNECT_PATTERN = Pattern.compile("CONNECT (.*mega(?:\\.co)?\\.nz):(443) HTTP/(1\\.[01])", Pattern.CASE_INSENSITIVE);
+        public static final Pattern CONNECT_PATTERN = Pattern.compile("CONNECT ((?:[A-Za-z0-9-]+\\.)*mega(?:\\.co)?\\.nz):(443) HTTP/(1\\.[01])", Pattern.CASE_INSENSITIVE);
         public static final Pattern AUTH_PATTERN = Pattern.compile("Proxy-Authorization: Basic +(.+)", Pattern.CASE_INSENSITIVE);
+        private static final int MAX_HEADER_COUNT = 128;
 
         private static void forwardData(Socket inputSocket, Socket outputSocket) {
             try {
@@ -142,17 +143,18 @@ public class MegaProxyServer implements Runnable {
                 try {
                     OutputStream outputStream = outputSocket.getOutputStream();
                     try {
-                        byte[] buffer = new byte[4096];
+                        byte[] buffer = new byte[16384];
                         int read;
-                        do {
-                            read = inputStream.read(buffer);
+                        while ((read = inputStream.read(buffer)) >= 0) {
                             if (read > 0) {
                                 outputStream.write(buffer, 0, read);
                                 if (inputStream.available() < 1) {
                                     outputStream.flush();
                                 }
+                            } else {
+                                Thread.onSpinWait();
                             }
-                        } while (read >= 0);
+                        }
                     } finally {
                         if (!outputSocket.isOutputShutdown()) {
                             outputSocket.shutdownOutput();
@@ -180,16 +182,23 @@ public class MegaProxyServer implements Runnable {
         }
 
         private boolean _checkProxyAuth(String proxy_auth) {
-
             int sep = proxy_auth.indexOf(':');
             if (sep < 0) {
                 return false;
             }
-
-            byte[] expected = _password.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-            byte[] given = proxy_auth.substring(sep + 1).trim().getBytes(java.nio.charset.StandardCharsets.UTF_8);
-
-            return java.security.MessageDigest.isEqual(expected, given);
+            String user = proxy_auth.substring(0, sep);
+            String pass = proxy_auth.substring(sep + 1).trim();
+            try {
+                java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+                byte[] expectedUser = md.digest("megacrypter".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                byte[] givenUser = md.digest(user.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                byte[] expectedPass = md.digest(_password.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                byte[] givenPass = md.digest(pass.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                return java.security.MessageDigest.isEqual(expectedUser, givenUser)
+                        & java.security.MessageDigest.isEqual(expectedPass, givenPass);
+            } catch (java.security.NoSuchAlgorithmException ex) {
+                return false;
+            }
         }
 
         @Override
@@ -207,9 +216,15 @@ public class MegaProxyServer implements Runnable {
 
                     String header;
                     String proxy_auth = null;
+                    int headerCount = 0;
 
                     do {
                         header = readLine(_clientSocket);
+                        if (++headerCount > MAX_HEADER_COUNT) {
+                            outputStreamWriter.write("HTTP/" + matcher.group(3) + " 431 Request Header Fields Too Large\r\nProxy-agent: MegaProxyServer/1.0\r\n\r\n");
+                            outputStreamWriter.flush();
+                            return;
+                        }
 
                         Matcher matcher_auth = AUTH_PATTERN.matcher(header);
 

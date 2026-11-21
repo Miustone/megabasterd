@@ -129,7 +129,7 @@ public class Upload implements Transference, Runnable, SecureSingleThreadNotifia
         _progress_lock = new Object();
         _partialProgressQueue = new ConcurrentLinkedQueue<>();
         _rejectedChunkIds = new ConcurrentLinkedQueue<>();
-        _thread_pool = Executors.newCachedThreadPool();
+        _thread_pool = Executors.newVirtualThreadPerTaskExecutor();
         _view = new UploadView(this);
         _progress_meter = new ProgressMeter(this);
         _file_meta_mac = null;
@@ -167,7 +167,7 @@ public class Upload implements Transference, Runnable, SecureSingleThreadNotifia
         _chunkworkers = new ArrayList<>();
         _partialProgressQueue = new ConcurrentLinkedQueue<>();
         _rejectedChunkIds = new ConcurrentLinkedQueue<>();
-        _thread_pool = Executors.newCachedThreadPool();
+        _thread_pool = Executors.newVirtualThreadPerTaskExecutor();
         _view = new UploadView(this);
         _progress_meter = new ProgressMeter(this);
         _file_meta_mac = null;

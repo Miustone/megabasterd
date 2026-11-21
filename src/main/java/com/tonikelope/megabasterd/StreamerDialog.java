@@ -245,7 +245,8 @@ public class StreamerDialog extends javax.swing.JDialog implements ClipboardChan
 
                         data = Bin2UrlBASE64(((selected_account != null ? selected_account : "") + "|" + link).getBytes("UTF-8"));
 
-                        stream_link = "http://localhost:1337/video/" + data;
+                        String tokenPart = _main_panel.getKiss_stream_server() != null ? (_main_panel.getKiss_stream_server().getAuthToken() + "/") : "";
+                        stream_link = "http://localhost:" + STREAMER_PORT + "/video/" + tokenPart + data;
 
                     } else {
 

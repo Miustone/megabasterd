@@ -66,10 +66,21 @@ import javax.swing.UIManager;
  */
 public final class MainPanel {
 
-    public static final String VERSION = "8.61";
+    public static final String VERSION = "9.0";
     public static final boolean FORCE_SMART_PROXY = false; //TRUE FOR DEBUGING SMART PROXY
     public static final int THROTTLE_SLICE_SIZE = 16 * 1024;
     public static final int DEFAULT_BYTE_BUFFER_SIZE = 16 * 1024;
+    private static volatile int AUTO_TUNE_BUFFER_BYTES = 128 * 1024;
+
+    public static int getAutoTuneBufferBytes() {
+        return AUTO_TUNE_BUFFER_BYTES;
+    }
+
+    public static void setAutoTuneBufferBytes(int bytes) {
+        if (bytes >= 16 * 1024 && bytes <= 1024 * 1024) {
+            AUTO_TUNE_BUFFER_BYTES = bytes;
+        }
+    }
     public static final int STREAMER_PORT = 1337;
     public static final int WATCHDOG_PORT = 1338;
     public static final int DEFAULT_MEGA_PROXY_PORT = 9999;
@@ -311,7 +322,7 @@ public final class MainPanel {
             Logger.getLogger(MainPanel.class.getName()).log(SEVERE, null, ex);
         }
 
-        setNimbusLookAndFeel("yes".equals(DBTools.selectSettingValue("dark_mode")));
+        WinUI3Theme.apply(DBTools.selectSettingValue("dark_mode"));
 
         if ("yes".equals(DBTools.selectSettingValue("upload_log"))) {
             MiscTools.createUploadLogDir();
@@ -547,14 +558,15 @@ public final class MainPanel {
                 //    "Debug file" in Settings appeared to do nothing because
                 //    every LOG.log(...) call went to the original stderr (i.e.,
                 //    discarded on javaw / Windows).
-                java.util.logging.FileHandler fh = new java.util.logging.FileHandler(debug_path, true);
+                java.util.logging.FileHandler fh = new java.util.logging.FileHandler(debug_path, 10 * 1024 * 1024, 3, true);
                 fh.setEncoding("UTF-8");
                 fh.setLevel(Level.ALL);
                 fh.setFormatter(new java.util.logging.SimpleFormatter());
 
                 java.util.logging.Logger root = java.util.logging.Logger.getLogger("");
-                root.setLevel(Level.ALL);
+                root.setLevel(Level.INFO);
                 root.addHandler(fh);
+                java.util.logging.Logger.getLogger("com.tonikelope.megabasterd").setLevel(Level.ALL);
 
                 // Lower the ConsoleHandler level so important stuff still shows
                 // on stdout for users running from a terminal.
@@ -823,6 +835,37 @@ public final class MainPanel {
 
         resumeUploads();
 
+        runStartupAutoTuneAsync();
+
+    }
+
+    public void runStartupAutoTuneAsync() {
+        String autoTuneSetting = DBTools.selectSettingValue("auto_tune");
+        final boolean applyRecommended = !"no".equals(autoTuneSetting);
+        THREAD_POOL.execute(() -> {
+            Path targetDir = (_default_download_path != null && !_default_download_path.isBlank())
+                    ? Paths.get(_default_download_path)
+                    : Paths.get(MEGABASTERD_HOME_DIR);
+            SystemBenchmark.AutoTuningProfile profile = SystemBenchmark.run(targetDir, true);
+            setAutoTuneBufferBytes(profile.getRecommendedBufferBytes());
+            if (applyRecommended) {
+                if (DBTools.selectSettingValue("max_downloads") == null) {
+                    _max_dl = profile.getRecommendedConcurrentDownloads();
+                    if (_download_manager != null) {
+                        _download_manager.setMax_running_trans(_max_dl);
+                    }
+                }
+                if (DBTools.selectSettingValue("default_slots_down") == null) {
+                    _default_slots_down = profile.getRecommendedDownloadSlots();
+                }
+                if (DBTools.selectSettingValue("default_slots_up") == null) {
+                    _default_slots_up = profile.getRecommendedUploadSlots();
+                }
+            }
+            if (_view != null) {
+                _view.updateBenchmarkStatus(profile);
+            }
+        });
     }
 
     public static Boolean getResume_uploads() {
@@ -1011,6 +1054,23 @@ public final class MainPanel {
         return _streamserver;
     }
 
+    public KissVideoStreamServer getKiss_stream_server() {
+        return _streamserver;
+    }
+
+    public static void restartApplicationFresh() {
+        try {
+            if (_single_instance_lock != null) {
+                _single_instance_lock.release();
+            }
+            if (_single_instance_raf != null) {
+                _single_instance_raf.close();
+            }
+        } catch (IOException ignore) {
+        }
+        MiscTools.restartApplication();
+    }
+
     public int getMax_dl_speed() {
         return _max_dl_speed;
     }
@@ -1069,19 +1129,10 @@ public final class MainPanel {
 
         String _font = selectSettingValue("font");
 
-        if (_font != null) {
-            if (_font.equals("DEFAULT")) {
-
-                GUI_FONT = new JLabel().getFont();
-
-            } else {
-
-                GUI_FONT = createAndRegisterFont("/fonts/NotoSansCJK-Regular.ttc");
-
-            }
-        } else {
-
+        if ("ALTERNATIVE".equals(_font)) {
             GUI_FONT = createAndRegisterFont("/fonts/NotoSansCJK-Regular.ttc");
+        } else {
+            GUI_FONT = WinUI3Theme.resolveWin11Font(Font.PLAIN, 13);
         }
 
         String def_slots = selectSettingValue("default_slots_down");
@@ -1449,6 +1500,19 @@ public final class MainPanel {
 
         MiscTools.purgeFolderCache();
 
+        try {
+            if (_streamserver != null) {
+                _streamserver.stopServer();
+            }
+        } catch (Exception ignore) {
+        }
+        try {
+            if (_mega_proxy_server != null) {
+                _mega_proxy_server.stopServer();
+            }
+        } catch (Exception ignore) {
+        }
+
         synchronized (DBTools.class) {
 
             try {
@@ -1677,14 +1741,20 @@ public final class MainPanel {
 
             getView().setEnabled(false);
 
-            if (!_download_manager.getTransference_running_list().isEmpty() || !_upload_manager.getTransference_running_list().isEmpty() || !_download_manager.getTransference_waitstart_queue().isEmpty() || !_upload_manager.getTransference_waitstart_queue().isEmpty()) {
+            boolean hasAnyDownloads = !_download_manager.getTransference_running_list().isEmpty()
+                    || !_download_manager.getTransference_waitstart_queue().isEmpty()
+                    || !_download_manager.getTransference_waitstart_aux_queue().isEmpty()
+                    || !_download_manager.getTransference_provision_queue().isEmpty()
+                    || !_download_manager.getTransference_preprocess_global_queue().isEmpty()
+                    || _download_manager.getTransference_finished_queue().stream().anyMatch(t -> t instanceof Download d && d.isStatusError() && !d.isCanceled());
+            boolean hasAnyUploads = !_upload_manager.getTransference_running_list().isEmpty()
+                    || !_upload_manager.getTransference_waitstart_queue().isEmpty()
+                    || !_upload_manager.getTransference_waitstart_aux_queue().isEmpty()
+                    || !_upload_manager.getTransference_provision_queue().isEmpty()
+                    || !_upload_manager.getTransference_preprocess_global_queue().isEmpty();
 
-                // Hard cap on the graceful drain. Without this the dialog can sit
-                // indefinitely waiting for workers that are blocked inside a 60s
-                // HTTP read timeout (or repeatedly on consecutive 509 backoffs);
-                // the user ends up clicking EXIT NOW anyway. After this much wall
-                // time we just call byebyenow ourselves -- the queue has already
-                // been persisted upfront, so nothing is lost. (#751)
+            if (hasAnyDownloads || hasAnyUploads) {
+
                 final long SHUTDOWN_HARD_TIMEOUT_MS = 30_000L;
 
                 final WarningExitMessage exit_message = new WarningExitMessage(getView(), true, this, restart);
@@ -1693,24 +1763,6 @@ public final class MainPanel {
 
                     final long start = System.currentTimeMillis();
 
-                    // -------------------------------------------------------------
-                    // 1) Snapshot the queue UPFRONT and persist it once.
-                    //    The previous code rebuilt this snapshot every iteration
-                    //    of the drain loop, which meant a download that exited
-                    //    between two iterations dropped out of the persisted set
-                    //    (its URL never made it to download_queue). Doing it once
-                    //    here -- before any transference has had a chance to exit
-                    //    -- guarantees the full resume set survives across the
-                    //    app restart. (#751)
-                    // -------------------------------------------------------------
-                    // Capture every download URL still in flight, in priority
-                    // order. Previously this only covered running_list +
-                    // waitstart_queue: anything mid-provisioning, anything in
-                    // the aux flush queue, and any URL the new-download
-                    // Runnable had pasted but not yet converted to a Download
-                    // was lost silently on exit. Now we union all four
-                    // download-side sources so a user who exits mid-batch
-                    // recovers the full set on next launch.
                     java.util.LinkedHashSet<String> downloads_set = new java.util.LinkedHashSet<>();
                     for (Transference t : _download_manager.getTransference_running_list()) {
                         downloads_set.add(((Download) t).getUrl());
@@ -1724,10 +1776,11 @@ public final class MainPanel {
                     for (Transference t : _download_manager.getTransference_provision_queue()) {
                         downloads_set.add(((Download) t).getUrl());
                     }
-                    // _transference_preprocess_global_queue carries Strings on
-                    // the download side (raw URLs the user pasted that have
-                    // not yet been converted to Download objects); the upload
-                    // side stores File objects so we filter by type.
+                    for (Transference t : _download_manager.getTransference_finished_queue()) {
+                        if (t instanceof Download d && d.isStatusError() && !d.isCanceled()) {
+                            downloads_set.add(d.getUrl());
+                        }
+                    }
                     for (Object o : _download_manager.getTransference_preprocess_global_queue()) {
                         if (o instanceof String) {
                             downloads_set.add((String) o);

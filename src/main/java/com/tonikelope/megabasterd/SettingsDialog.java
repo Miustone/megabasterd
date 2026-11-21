@@ -75,6 +75,8 @@ public class SettingsDialog extends javax.swing.JDialog {
     // shutdown() runs on dispose() so any in-flight TCP probes are cancelled
     // instead of blocking the JVM. (#757)
     private QuotaRecoveryPanel _quota_recovery_panel;
+    private javax.swing.JCheckBox _auto_tune_checkbox;
+    private javax.swing.JLabel _auto_tune_status_label;
 
     public boolean isSettings_ok() {
         return _settings_ok;
@@ -242,6 +244,13 @@ public class SettingsDialog extends javax.swing.JDialog {
             // at the moment they execute -- after insertTab the existing tabs
             // shift to 0, 2, 3, 4 but they were already labelled correctly.
             _quota_recovery_panel = new QuotaRecoveryPanel(_main_panel);
+            _quota_recovery_panel.setOnWorkingProxiesSaved(() -> {
+                String refreshed = DBTools.selectSettingValue("custom_proxy_list");
+                if (refreshed != null) {
+                    custom_proxy_textarea.setText(refreshed);
+                    custom_proxy_textarea.setCaretPosition(0);
+                }
+            });
 
             // Force LEFT alignment so a small JCheckBox doesn't render
             // off-centre relative to the wider JPanels (BoxLayout otherwise
@@ -324,6 +333,92 @@ public class SettingsDialog extends javax.swing.JDialog {
 
             javax.swing.ImageIcon proxy_icon = new javax.swing.ImageIcon(getClass().getResource("/images/icons8-services-30.png"));
             panel_tabs.insertTab(I18n.tr("ui.tab.smartproxy"), proxy_icon, proxy_scroll, null, 1);
+
+            // Build WinUI3 "System & Reset" tab (Auto-Tune Benchmark + Factory Reset)
+            javax.swing.JPanel systemTab = new javax.swing.JPanel();
+            systemTab.setLayout(new javax.swing.BoxLayout(systemTab, javax.swing.BoxLayout.Y_AXIS));
+            systemTab.setBorder(javax.swing.BorderFactory.createEmptyBorder(14, 14, 14, 14));
+
+            javax.swing.JPanel autoTuneCard = new javax.swing.JPanel(new java.awt.BorderLayout(8, 8));
+            WinUI3Theme.styleCardPanel(autoTuneCard);
+            autoTuneCard.setAlignmentX(java.awt.Component.LEFT_ALIGNMENT);
+            javax.swing.JLabel autoTuneHeader = new javax.swing.JLabel(I18n.tr("ui.system.autotune_title"));
+            autoTuneHeader.setFont(WinUI3Theme.resolveWin11Font(java.awt.Font.BOLD, 15));
+            autoTuneCard.add(autoTuneHeader, java.awt.BorderLayout.NORTH);
+
+            javax.swing.JPanel autoTuneBody = new javax.swing.JPanel();
+            autoTuneBody.setOpaque(false);
+            autoTuneBody.setLayout(new javax.swing.BoxLayout(autoTuneBody, javax.swing.BoxLayout.Y_AXIS));
+            _auto_tune_checkbox = new javax.swing.JCheckBox(I18n.tr("ui.system.autotune_checkbox"));
+            _auto_tune_checkbox.setSelected(!"no".equals(DBTools.selectSettingValue("auto_tune")));
+            _auto_tune_checkbox.setAlignmentX(java.awt.Component.LEFT_ALIGNMENT);
+            autoTuneBody.add(_auto_tune_checkbox);
+            autoTuneBody.add(javax.swing.Box.createVerticalStrut(6));
+
+            SystemBenchmark.AutoTuningProfile curProf = SystemBenchmark.getLastProfile();
+            _auto_tune_status_label = new javax.swing.JLabel(
+                    I18n.tr("ui.system.autotune_status", curProf != null ? curProf.toSummaryString() : "---"));
+            _auto_tune_status_label.setAlignmentX(java.awt.Component.LEFT_ALIGNMENT);
+            autoTuneBody.add(_auto_tune_status_label);
+            autoTuneBody.add(javax.swing.Box.createVerticalStrut(8));
+
+            javax.swing.JButton rerunBenchBtn = new javax.swing.JButton(I18n.tr("ui.system.autotune_rerun"));
+            WinUI3Theme.stylePrimaryButton(rerunBenchBtn);
+            rerunBenchBtn.setAlignmentX(java.awt.Component.LEFT_ALIGNMENT);
+            rerunBenchBtn.addActionListener(ev -> {
+                rerunBenchBtn.setEnabled(false);
+                MainPanel.THREAD_POOL.execute(() -> {
+                    java.nio.file.Path dir = _download_path != null ? java.nio.file.Paths.get(_download_path) : java.nio.file.Paths.get(MainPanel.MEGABASTERD_HOME_DIR);
+                    SystemBenchmark.AutoTuningProfile p = SystemBenchmark.run(dir, true);
+                    MainPanel.setAutoTuneBufferBytes(p.getRecommendedBufferBytes());
+                    MiscTools.GUIRun(() -> {
+                        _auto_tune_status_label.setText(I18n.tr("ui.system.autotune_status", p.toSummaryString()));
+                        if (_auto_tune_checkbox.isSelected()) {
+                            max_downloads_spinner.setValue(p.getRecommendedConcurrentDownloads());
+                            default_slots_down_spinner.setValue(p.getRecommendedDownloadSlots());
+                            default_slots_up_spinner.setValue(p.getRecommendedUploadSlots());
+                        }
+                        if (_main_panel.getView() != null) {
+                            _main_panel.getView().updateBenchmarkStatus(p);
+                        }
+                        rerunBenchBtn.setEnabled(true);
+                    });
+                });
+            });
+            autoTuneBody.add(rerunBenchBtn);
+            autoTuneCard.add(autoTuneBody, java.awt.BorderLayout.CENTER);
+            systemTab.add(autoTuneCard);
+            systemTab.add(javax.swing.Box.createVerticalStrut(12));
+
+            javax.swing.JPanel resetCard = new javax.swing.JPanel(new java.awt.BorderLayout(8, 8));
+            WinUI3Theme.styleCardPanel(resetCard);
+            resetCard.setAlignmentX(java.awt.Component.LEFT_ALIGNMENT);
+            javax.swing.JLabel resetHeader = new javax.swing.JLabel(I18n.tr("ui.system.reset_title"));
+            resetHeader.setFont(WinUI3Theme.resolveWin11Font(java.awt.Font.BOLD, 15));
+            resetCard.add(resetHeader, java.awt.BorderLayout.NORTH);
+
+            javax.swing.JLabel resetDesc = new javax.swing.JLabel("<html><body style='width:500px'>" + I18n.tr("ui.reset.description") + "</body></html>");
+            resetCard.add(resetDesc, java.awt.BorderLayout.CENTER);
+
+            javax.swing.JPanel resetBtnRow = new javax.swing.JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 0, 0));
+            resetBtnRow.setOpaque(false);
+            javax.swing.JButton resetBtn = new javax.swing.JButton(I18n.tr("ui.system.reset_button"));
+            WinUI3Theme.styleDangerButton(resetBtn);
+            resetBtn.addActionListener(ev -> {
+                dispose();
+                ResetManager.showResetDialog(_main_panel, _main_panel.getView());
+            });
+            resetBtnRow.add(resetBtn);
+            resetCard.add(resetBtnRow, java.awt.BorderLayout.SOUTH);
+            systemTab.add(resetCard);
+
+            javax.swing.JScrollPane sysScroll = new javax.swing.JScrollPane(systemTab);
+            sysScroll.setBorder(null);
+            sysScroll.getVerticalScrollBar().setUnitIncrement(20);
+            panel_tabs.addTab(I18n.tr("ui.tab.system"), proxy_icon, sysScroll);
+
+            WinUI3Theme.stylePrimaryButton(save_button);
+            WinUI3Theme.applyScrollBarTuning(this);
 
             // updateFonts(this, ...) and translateLabels(this) ran at the top
             // of this constructor BEFORE smart_proxy_checkbox and
@@ -2567,6 +2662,9 @@ public class SettingsDialog extends javax.swing.JDialog {
             settings.put("reset_slot_proxy", proxy_reset_slot_checkbox.isSelected() ? "yes" : "no");
             settings.put("random_proxy", proxy_random_radio.isSelected() ? "yes" : "no");
             settings.put("dark_mode", dark_mode_checkbox.isSelected() ? "yes" : "no");
+            if (_auto_tune_checkbox != null) {
+                settings.put("auto_tune", _auto_tune_checkbox.isSelected() ? "yes" : "no");
+            }
             settings.put("upload_public_folder", upload_public_folder_checkbox.isSelected() ? "yes" : "no");
             settings.put("smartproxy_ban_time", String.valueOf(bad_proxy_time_spinner.getValue()));
             settings.put("smartproxy_timeout", String.valueOf(proxy_timeout_spinner.getValue()));
@@ -2574,10 +2672,6 @@ public class SettingsDialog extends javax.swing.JDialog {
 
             if (upload_log_checkbox.isSelected()) {
                 createUploadLogDir();
-            }
-
-            if (custom_proxy_textarea.getText().trim().length() == 0) {
-                smart_proxy_checkbox.setSelected(false);
             }
 
             settings.put("smart_proxy", smart_proxy_checkbox.isSelected() ? "yes" : "no");
@@ -3494,6 +3588,7 @@ public class SettingsDialog extends javax.swing.JDialog {
                 try {
 
                     try (InputStream fis = new BufferedInputStream(new FileInputStream(file)); ObjectInputStream ois = new ObjectInputStream(fis)) {
+                        ois.setObjectInputFilter(MiscTools.createSafeSettingsFilter());
 
                         HashMap<String, Object> settings = (HashMap<String, Object>) ois.readObject();
 

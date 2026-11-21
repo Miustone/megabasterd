@@ -39,6 +39,7 @@ public class MegaCrypterAPI {
     public static final Set<String> PASS_CACHE = new HashSet<>();
     public static final Object PASS_LOCK = new Object();
     private static final Logger LOG = Logger.getLogger(MegaCrypterAPI.class.getName());
+    private static final ObjectMapper SHARED_MAPPER = new ObjectMapper();
 
     private static String _rawRequest(String request, URL url_api) throws MegaCrypterAPIException {
 
@@ -61,25 +62,24 @@ public class MegaCrypterAPI {
                 con = (HttpURLConnection) url_api.openConnection();
             }
 
+            con.setConnectTimeout(Transference.HTTP_CONNECT_TIMEOUT);
+            con.setReadTimeout(Transference.HTTP_READ_TIMEOUT);
             con.setRequestProperty("Content-type", "application/json");
-
             con.setUseCaches(false);
-
             con.setRequestProperty("User-Agent", MainPanel.DEFAULT_USER_AGENT);
-
             con.setRequestMethod("POST");
-
             con.setDoOutput(true);
 
-            con.getOutputStream().write(request.getBytes("UTF-8"));
-
-            con.getOutputStream().close();
+            try (var os = con.getOutputStream()) {
+                os.write(request.getBytes("UTF-8"));
+            }
 
             if (con.getResponseCode() != 200) {
                 Logger.getLogger(MegaCrypterAPI.class.getName()).log(Level.WARNING, "{0} MegaCrypter HTTP {1} url={2}",
                         new Object[]{Thread.currentThread().getName(), con.getResponseCode(), url_api.toString()});
 
                 MiscTools.drainAndCloseErrorStream(con);
+                throw new MegaCrypterAPIException(-101);
 
             } else {
 
@@ -111,6 +111,7 @@ public class MegaCrypterAPI {
         } catch (IOException ex) {
             Logger.getLogger(MegaCrypterAPI.class.getName()).log(Level.SEVERE,
                     Thread.currentThread().getName() + " MegaCrypter IOException url=" + url_api, ex);
+            throw new MegaCrypterAPIException(-101);
         } finally {
 
             if (con != null) {
@@ -123,15 +124,25 @@ public class MegaCrypterAPI {
     }
 
     public static String getMegaFileDownloadUrl(String link, String pass_hash, String noexpire_token, String sid, String reverse) throws IOException, MegaCrypterAPIException {
-        String request = "{\"m\":\"dl\", \"link\": \"" + link + "\"" + (noexpire_token != null ? ", \"noexpire\": \"" + noexpire_token + "\"" : "") + (sid != null ? ", \"sid\": \"" + sid + "\"" : "") + (reverse != null ? ", \"reverse\": \"" + reverse + "\"" : "") + "}";
+        HashMap<String, Object> reqMap = new HashMap<>();
+        reqMap.put("m", "dl");
+        reqMap.put("link", link);
+        if (noexpire_token != null) {
+            reqMap.put("noexpire", noexpire_token);
+        }
+        if (sid != null) {
+            reqMap.put("sid", sid);
+        }
+        if (reverse != null) {
+            reqMap.put("reverse", reverse);
+        }
+        String request = SHARED_MAPPER.writeValueAsString(reqMap);
 
         URL url_api = new URL(findFirstRegex("https?://[^/]+", link, 0) + "/api");
 
         String res = MegaCrypterAPI._rawRequest(request, url_api);
 
-        ObjectMapper objectMapper = new ObjectMapper();
-
-        HashMap res_map = objectMapper.readValue(res, HashMap.class);
+        HashMap res_map = SHARED_MAPPER.readValue(res, HashMap.class);
 
         String dl_url = (String) res_map.get("url");
 
@@ -156,7 +167,13 @@ public class MegaCrypterAPI {
     }
 
     public static String[] getMegaFileMetadata(String link, MainPanelView panel, String reverse) throws MegaCrypterAPIException, MalformedURLException, IOException {
-        String request = "{\"m\":\"info\", \"link\": \"" + link + "\"" + (reverse != null ? ", \"reverse\": \"" + reverse + "\"" : "") + "}";
+        HashMap<String, Object> reqMap = new HashMap<>();
+        reqMap.put("m", "info");
+        reqMap.put("link", link);
+        if (reverse != null) {
+            reqMap.put("reverse", reverse);
+        }
+        String request = SHARED_MAPPER.writeValueAsString(reqMap);
 
         URL url_api = new URL(findFirstRegex("https?://[^/]+", link, 0) + "/api");
 
@@ -170,31 +187,18 @@ public class MegaCrypterAPI {
 
         HashMap res_map = objectMapper.readValue(res, HashMap.class);
 
-        String fname = cleanFilename((String) res_map.get("name"));
-
+        String rawName = (String) res_map.get("name");
+        String fname = null;
         String fpath = null;
+        String rawFpath = null;
 
         Object fpath_val = res_map.get("path");
 
-        if (fpath_val instanceof Boolean) {
-
-            fpath = null;
-
-        } else if (fpath_val instanceof String) {
-
-            fpath = cleanFilePath((String) fpath_val);
+        if (fpath_val instanceof String s) {
+            rawFpath = s;
         }
 
-        String file_size;
-
-        try {
-
-            file_size = String.valueOf(res_map.get("size"));
-
-        } catch (java.lang.ClassCastException ex) {
-
-            file_size = String.valueOf(res_map.get("size"));
-        }
+        String file_size = String.valueOf(res_map.get("size"));
 
         String fkey = (String) res_map.get("key");
 
@@ -202,28 +206,19 @@ public class MegaCrypterAPI {
 
         Object expire_val = res_map.get("expire");
 
-        if (expire_val instanceof Boolean) {
-
-            noexpire_token = null;
-
-        } else if (expire_val instanceof String) {
-
-            String aux[] = ((String) expire_val).split("#");
-
-            noexpire_token = aux[1];
+        if (expire_val instanceof String expStr) {
+            String[] aux = expStr.split("#");
+            if (aux.length > 1) {
+                noexpire_token = aux[1];
+            }
         }
 
         Object pass_val = res_map.get("pass");
 
         String pass = null;
 
-        if (pass_val instanceof Boolean) {
-
-            pass = null;
-
-        } else if (pass_val instanceof String) {
-
-            pass = (String) pass_val;
+        if (pass_val instanceof String pStr) {
+            pass = pStr;
         }
 
         if (pass != null) {
@@ -233,7 +228,16 @@ public class MegaCrypterAPI {
                 throw new MegaCrypterAPIException(25);
             }
 
-            int iterations = Integer.parseInt(pass_items[0]);
+            int iterations;
+            try {
+                iterations = Integer.parseInt(pass_items[0]);
+            } catch (NumberFormatException nfe) {
+                throw new MegaCrypterAPIException(25);
+            }
+            // Clamp PBKDF2 exponent to prevent remote CPU DoS (#788).
+            if (iterations < 1 || iterations > 20) {
+                throw new MegaCrypterAPIException(25);
+            }
 
             byte[] key_check = BASE642Bin(pass_items[1]);
 
@@ -258,11 +262,6 @@ public class MegaCrypterAPI {
 
                     if ((password = pass_list.poll()) == null) {
 
-                        // Show the modal password prompt OUTSIDE this lock would be
-                        // preferable, but we need the user's input before continuing
-                        // to validate. Run on EDT via invokeAndWait so that the modal
-                        // dialog's event loop is on the right thread; PASS_LOCK
-                        // remains held briefly.
                         final String[] entered = {null};
                         try {
                             MiscTools.GUIRunAndWait(() -> {
@@ -278,7 +277,7 @@ public class MegaCrypterAPI {
 
                         try {
 
-                            info_key = PBKDF2HMACSHA256(password, salt, (int) Math.pow(2, iterations), 256);
+                            info_key = PBKDF2HMACSHA256(password, salt, 1 << iterations, 256);
 
                             decrypter = genDecrypter("AES", "AES/CBC/PKCS5Padding", info_key, iv);
 
@@ -314,14 +313,15 @@ public class MegaCrypterAPI {
 
                     decrypter = genDecrypter("AES", "AES/CBC/PKCS5Padding", info_key, iv);
 
-                    byte[] decrypted_name = decrypter.doFinal(BASE642Bin(fname));
+                    byte[] decrypted_name = decrypter.doFinal(BASE642Bin(rawName));
 
-                    fname = new String(decrypted_name, "UTF-8");
+                    fname = cleanFilename(new String(decrypted_name, "UTF-8"));
 
-                    if (fpath != null) {
-                        byte[] decrypted_fpath = decrypter.doFinal(BASE642Bin(fpath));
+                    if (rawFpath != null) {
+                        decrypter = genDecrypter("AES", "AES/CBC/PKCS5Padding", info_key, iv);
+                        byte[] decrypted_fpath = decrypter.doFinal(BASE642Bin(rawFpath));
 
-                        fpath = new String(decrypted_fpath, "UTF-8");
+                        fpath = cleanFilePath(new String(decrypted_fpath, "UTF-8"));
                     }
 
                     pass = Bin2BASE64(info_key);
@@ -331,6 +331,11 @@ public class MegaCrypterAPI {
                     throw new MegaCrypterAPIException(25);
 
                 }
+            }
+        } else {
+            fname = cleanFilename(rawName);
+            if (rawFpath != null) {
+                fpath = cleanFilePath(rawFpath);
             }
         }
 

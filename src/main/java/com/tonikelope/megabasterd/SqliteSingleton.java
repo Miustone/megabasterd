@@ -62,7 +62,7 @@ public class SqliteSingleton {
                         }
                     }
 
-                    _real_conn = DriverManager.getConnection("jdbc:sqlite:" + MainPanel.MEGABASTERD_HOME_DIR + "/.megabasterd" + MainPanel.VERSION + "/" + SQLITE_FILE + "?journal_mode=WAL&synchronous=OFF&journal_size_limit=500");
+                    _real_conn = DriverManager.getConnection("jdbc:sqlite:" + MainPanel.MEGABASTERD_HOME_DIR + "/.megabasterd" + MainPanel.VERSION + "/" + SQLITE_FILE + "?journal_mode=WAL&synchronous=NORMAL&busy_timeout=5000&journal_size_limit=5242880");
 
                     _proxy_conn = _wrap(_real_conn);
                 }

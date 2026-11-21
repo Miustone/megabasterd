@@ -128,7 +128,11 @@ public class UploadView extends javax.swing.JPanel implements TransferenceView {
 
             ((JSpinner.DefaultEditor) slots_spinner.getEditor()).getTextField().setEditable(false);
 
-            speed_label.setForeground(new Color(0, 128, 255));
+            WinUI3Theme.styleCardPanel(this);
+            speed_label.setForeground(WinUI3Theme.accentColor());
+            file_name_label.setForeground(WinUI3Theme.accentColor());
+            file_size_label.setForeground(WinUI3Theme.accentColor());
+            WinUI3Theme.styleDangerButton(stop_button);
 
             progress_pbar.setMinimum(0);
             progress_pbar.setMaximum(MAX_VALUE);
@@ -641,7 +645,7 @@ public class UploadView extends javax.swing.JPanel implements TransferenceView {
     public void printStatusError(final String message) {
 
         MiscTools.GUIRunAndWait(() -> {
-            status_label.setForeground(Color.red);
+            status_label.setForeground(WinUI3Theme.statusErrorColor());
             status_label.setText(LabelTranslatorSingleton.getInstance().translate(message));
         });
     }
@@ -650,7 +654,7 @@ public class UploadView extends javax.swing.JPanel implements TransferenceView {
     public void printStatusOK(final String message) {
 
         MiscTools.GUIRunAndWait(() -> {
-            status_label.setForeground(new Color(0, 170, 0));
+            status_label.setForeground(WinUI3Theme.statusOkColor());
             status_label.setText(LabelTranslatorSingleton.getInstance().translate(message));
         });
     }
@@ -659,7 +663,7 @@ public class UploadView extends javax.swing.JPanel implements TransferenceView {
     public void printStatusNormal(final String message) {
 
         MiscTools.GUIRunAndWait(() -> {
-            status_label.setForeground(new Color(102, 102, 102));
+            status_label.setForeground(javax.swing.UIManager.getColor("Label.foreground"));
             status_label.setText(LabelTranslatorSingleton.getInstance().translate(message));
         });
 
@@ -668,7 +672,7 @@ public class UploadView extends javax.swing.JPanel implements TransferenceView {
     public void printStatusWarning(final String message) {
 
         MiscTools.GUIRunAndWait(() -> {
-            status_label.setForeground(new Color(255, 0, 255));
+            status_label.setForeground(WinUI3Theme.statusWarnColor());
             status_label.setText(LabelTranslatorSingleton.getInstance().translate(message));
         });
 

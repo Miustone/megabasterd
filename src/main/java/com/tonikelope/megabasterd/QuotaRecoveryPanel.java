@@ -86,6 +86,11 @@ public class QuotaRecoveryPanel extends JPanel {
     // is disposed mid-test; without this the JVM would wait up to 3 s per
     // outstanding TCP connect to complete before exiting.
     private volatile ExecutorService _probe_executor;
+    private volatile Runnable _on_working_proxies_saved;
+
+    public void setOnWorkingProxiesSaved(Runnable callback) {
+        _on_working_proxies_saved = callback;
+    }
 
     // Addresses that passed the most recent test, in submission order.
     // Drives the "Save working proxies to custom list" action: any working
@@ -530,6 +535,10 @@ public class QuotaRecoveryPanel extends JPanel {
             try {
                 int written = pm.saveWorkingProxiesToCustomList(snapshot);
                 appendOutput(I18n.tr("ui.quota.save_working.done", written) + "\n");
+                Runnable cb = _on_working_proxies_saved;
+                if (cb != null) {
+                    MiscTools.GUIRun(cb);
+                }
             } catch (SQLException ex) {
                 LOG.log(Level.WARNING, "Save working proxies failed: {0}", ex.getMessage());
                 appendOutput(I18n.tr("ui.quota.save_working.error", ex.getMessage()) + "\n");

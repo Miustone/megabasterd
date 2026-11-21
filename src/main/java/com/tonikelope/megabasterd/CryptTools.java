@@ -712,6 +712,176 @@ public class CryptTools {
         return f.generateSecret(ks).getEncoded();
     }
 
+    /**
+     * Streaming MEGA 1 MiB sub-chunk CBC-MAC accumulator. Computes exact
+     * per-sub-chunk 16-byte MACs in RAM as decrypted bytes stream through,
+     * using bulk AES-CBC {@code Cipher.update()} without per-16-byte allocations.
+     */
+    public static final class SubChunkMacAccumulator {
+
+        private final byte[] fileKey;
+        private final byte[] subChunkIv16;
+        private final long fileSize;
+        private final java.util.Map<Long, byte[]> macs = new java.util.TreeMap<>();
+
+        private long currentMacChunkId;
+        private long currentMacRemaining;
+        private Cipher currentCipher;
+        private final byte[] carry = new byte[16];
+        private int carryLen = 0;
+        private final byte[] lastCipherBlock = new byte[16];
+        private boolean hasCipherBlock = false;
+        private byte[] scratchOut = new byte[65536];
+
+        public SubChunkMacAccumulator(long downloadChunkId, int sizeMulti, long fileSize, byte[] fileKey, byte[] fileIv8) throws Exception {
+            this.fileKey = fileKey;
+            this.fileSize = fileSize;
+            this.subChunkIv16 = new byte[16];
+            System.arraycopy(fileIv8, 0, this.subChunkIv16, 0, 8);
+            System.arraycopy(fileIv8, 0, this.subChunkIv16, 8, 8);
+
+            this.currentMacChunkId = (downloadChunkId <= 7)
+                    ? downloadChunkId
+                    : 8L + (downloadChunkId - 8L) * sizeMulti;
+            initCurrentSubChunk();
+        }
+
+        private void initCurrentSubChunk() throws Exception {
+            long offset = ChunkWriterManager.calculateChunkOffset(currentMacChunkId, 1);
+            if (offset >= fileSize) {
+                currentMacRemaining = 0;
+                currentCipher = null;
+                return;
+            }
+            currentMacRemaining = ChunkWriterManager.calculateChunkSize(currentMacChunkId, fileSize, offset, 1);
+            currentCipher = genCrypter("AES", "AES/CBC/NoPadding", fileKey, subChunkIv16);
+            carryLen = 0;
+            hasCipherBlock = false;
+            System.arraycopy(subChunkIv16, 0, lastCipherBlock, 0, 16);
+        }
+
+        public void update(byte[] plain, int off, int len) throws Exception {
+            int pos = off;
+            int remaining = len;
+            while (remaining > 0 && currentCipher != null) {
+                int take = (int) Math.min(remaining, currentMacRemaining);
+                processSubChunkBytes(plain, pos, take);
+                pos += take;
+                remaining -= take;
+                currentMacRemaining -= take;
+                if (currentMacRemaining == 0) {
+                    finalizeCurrentSubChunk();
+                    currentMacChunkId++;
+                    initCurrentSubChunk();
+                }
+            }
+        }
+
+        private void processSubChunkBytes(byte[] data, int off, int len) throws Exception {
+            if (len <= 0) {
+                return;
+            }
+            int pos = off;
+            int rem = len;
+            if (carryLen > 0) {
+                int need = Math.min(16 - carryLen, rem);
+                System.arraycopy(data, pos, carry, carryLen, need);
+                carryLen += need;
+                pos += need;
+                rem -= need;
+                if (carryLen == 16) {
+                    byte[] out = currentCipher.update(carry, 0, 16);
+                    if (out != null && out.length >= 16) {
+                        System.arraycopy(out, out.length - 16, lastCipherBlock, 0, 16);
+                        hasCipherBlock = true;
+                    }
+                    carryLen = 0;
+                }
+            }
+            int fullBlocksLen = (rem / 16) * 16;
+            if (fullBlocksLen > 0) {
+                if (scratchOut.length < fullBlocksLen) {
+                    scratchOut = new byte[fullBlocksLen];
+                }
+                int written = currentCipher.update(data, pos, fullBlocksLen, scratchOut, 0);
+                if (written >= 16) {
+                    System.arraycopy(scratchOut, written - 16, lastCipherBlock, 0, 16);
+                    hasCipherBlock = true;
+                }
+                pos += fullBlocksLen;
+                rem -= fullBlocksLen;
+            }
+            if (rem > 0) {
+                System.arraycopy(data, pos, carry, 0, rem);
+                carryLen = rem;
+            }
+        }
+
+        private void finalizeCurrentSubChunk() throws Exception {
+            if (carryLen > 0) {
+                Arrays.fill(carry, carryLen, 16, (byte) 0);
+                byte[] out = currentCipher.doFinal(carry, 0, 16);
+                if (out != null && out.length >= 16) {
+                    System.arraycopy(out, out.length - 16, lastCipherBlock, 0, 16);
+                }
+            } else if (!hasCipherBlock) {
+                byte[] out = currentCipher.doFinal(new byte[16]);
+                System.arraycopy(out, out.length - 16, lastCipherBlock, 0, 16);
+            } else {
+                currentCipher.doFinal();
+            }
+            macs.put(currentMacChunkId, Arrays.copyOf(lastCipherBlock, 16));
+        }
+
+        public java.util.Map<Long, byte[]> finish() throws Exception {
+            if (currentCipher != null && currentMacRemaining == 0) {
+                finalizeCurrentSubChunk();
+            }
+            return macs;
+        }
+    }
+
+    /**
+     * Verifies a downloaded file's MEGA meta-MAC in milliseconds from cached
+     * 1 MiB sub-chunk MACs. Returns {@code Boolean.TRUE}/{@code Boolean.FALSE},
+     * or {@code null} if any sub-chunk MAC is missing and a disk pass is needed.
+     */
+    public static Boolean verifyMetaMacFromStore(DownloadStateStore store, String fileKey, long fileSize) throws Exception {
+        if (fileSize <= 0) {
+            return Boolean.TRUE;
+        }
+        int[] intKey = bin2i32a(UrlBASE642Bin(fileKey));
+        int[] expectedMetaMac = new int[]{intKey[6], intKey[7]};
+        byte[] byteFileKey = initMEGALinkKey(fileKey);
+
+        long totalMacChunks = 0L;
+        long probeId = 1L;
+        while (ChunkWriterManager.calculateChunkOffset(probeId, 1) < fileSize) {
+            totalMacChunks = probeId;
+            probeId++;
+        }
+        if (!store.hasAllSubChunkMacs(totalMacChunks)) {
+            return null;
+        }
+
+        Cipher ecb = Cipher.getInstance("AES/ECB/NoPadding");
+        ecb.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(byteFileKey, "AES"));
+        byte[] fileMac = new byte[16];
+        for (long id = 1L; id <= totalMacChunks; id++) {
+            byte[] cMac = store.getSubChunkMac(id);
+            if (cMac == null || cMac.length != 16) {
+                return null;
+            }
+            for (int i = 0; i < 16; i++) {
+                fileMac[i] ^= cMac[i];
+            }
+            fileMac = ecb.doFinal(fileMac);
+        }
+
+        int[] fm = bin2i32a(fileMac);
+        return (fm[0] ^ fm[1]) == expectedMetaMac[0] && (fm[2] ^ fm[3]) == expectedMetaMac[1];
+    }
+
     private CryptTools() {
     }
 }

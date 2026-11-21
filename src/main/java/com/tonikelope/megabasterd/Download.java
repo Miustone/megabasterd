@@ -103,6 +103,12 @@ public class Download implements Transference, Runnable, SecureSingleThreadNotif
     private final ConcurrentLinkedQueue<Long> _partialProgressQueue;
     private volatile long _progress;
     private volatile ChunkWriterManager _chunkmanager;
+    private volatile DownloadStateStore _state_store;
+    private volatile FileChannel _part_channel;
+    private volatile java.nio.file.Path _part_path;
+    private volatile byte[] _byte_file_key;
+    private volatile byte[] _byte_file_iv;
+    private final java.util.concurrent.atomic.AtomicInteger _throttle_events = new java.util.concurrent.atomic.AtomicInteger(0);
     private volatile String _last_download_url;
     private volatile boolean _provision_ok;
     private boolean _auto_retry_on_error;
@@ -218,7 +224,7 @@ public class Download implements Transference, Runnable, SecureSingleThreadNotif
         _chunkworkers = new ArrayList<>();
         _partialProgressQueue = new ConcurrentLinkedQueue<>();
         _rejectedChunkIds = new ConcurrentLinkedQueue<>();
-        _thread_pool = newCachedThreadPool();
+        _thread_pool = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor();
         _view = new DownloadView(this);
         _progress_meter = new ProgressMeter(this);
         _custom_chunks_dir = custom_chunks_dir;
@@ -264,12 +270,64 @@ public class Download implements Transference, Runnable, SecureSingleThreadNotif
         _chunkworkers = new ArrayList<>();
         _partialProgressQueue = new ConcurrentLinkedQueue<>();
         _rejectedChunkIds = new ConcurrentLinkedQueue<>();
-        _thread_pool = newCachedThreadPool();
+        _thread_pool = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor();
         _view = new DownloadView(this);
         _progress_meter = new ProgressMeter(this);
         _custom_chunks_dir = download.getCustom_chunks_dir();
         _turbo = false;
 
+    }
+
+    public DownloadStateStore getStateStore() {
+        return _state_store;
+    }
+
+    public byte[] getByteFileKey() {
+        return _byte_file_key;
+    }
+
+    public byte[] getByteFileIv() {
+        return _byte_file_iv;
+    }
+
+    public int getIoBufferSize() {
+        return MainPanel.getAutoTuneBufferBytes();
+    }
+
+    public void writePartBytes(long offset, byte[] data, int len) throws IOException {
+        FileChannel fc = _part_channel;
+        if (fc == null || !fc.isOpen()) {
+            throw new IOException("Part channel closed");
+        }
+        java.nio.ByteBuffer buf = java.nio.ByteBuffer.wrap(data, 0, len);
+        long pos = offset;
+        while (buf.hasRemaining()) {
+            pos += fc.write(buf, pos);
+        }
+    }
+
+    public void invalidateDownloadUrl(String staleUrl) {
+        synchronized (_dl_url_lock) {
+            if (java.util.Objects.equals(_last_download_url, staleUrl)) {
+                _last_download_url = null;
+            }
+        }
+    }
+
+    public void recordThrottleSignal() {
+        _throttle_events.updateAndGet(v -> Math.min(8, v + 1));
+    }
+
+    public void clearThrottleSignal() {
+        _throttle_events.updateAndGet(v -> Math.max(0, v - 1));
+    }
+
+    public long getAdaptivePaceDelayMs() {
+        int lvl = _throttle_events.get();
+        if (lvl <= 0) {
+            return 0L;
+        }
+        return Math.min(600L, lvl * 75L);
     }
 
     public boolean isPriority() {
@@ -694,18 +752,32 @@ public class Download implements Transference, Runnable, SecureSingleThreadNotif
 
         try {
 
-            FileStore fs = Files.getFileStore(Paths.get(_download_path));
-
-            if (fs.getUsableSpace() < _file_size) {
-                _status_error = "NO DISK SPACE AVAILABLE!";
+            java.nio.file.Path baseDir = Paths.get(_download_path).toAbsolutePath().normalize();
+            java.nio.file.Path finalTarget = baseDir.resolve(_file_name).normalize();
+            if (!finalTarget.startsWith(baseDir)) {
+                _status_error = "SECURITY ERROR: Invalid file path!";
+                _auto_retry_on_error = false;
                 _exit = true;
             }
 
             if (!_exit) {
+                String spaceDir = (getCustom_chunks_dir() != null && !getCustom_chunks_dir().isBlank()) ? getCustom_chunks_dir() : _download_path;
+                String baseTempDirCheck = (getCustom_chunks_dir() != null && !getCustom_chunks_dir().isBlank()) ? getCustom_chunks_dir() : _download_path;
+                java.nio.file.Path candidatePart = Paths.get(baseTempDirCheck).toAbsolutePath().normalize().resolve(_file_name + ".mbpart");
+                long alreadyOnDisk = Files.exists(candidatePart) ? Files.size(candidatePart) : 0L;
+                long neededBytes = Math.max(0L, _file_size - alreadyOnDisk);
+                long usableSpace = MiscTools.getAvailableDiskSpace(Paths.get(spaceDir));
+                if (usableSpace < neededBytes) {
+                    _status_error = "NO DISK SPACE AVAILABLE!";
+                    _exit = true;
+                }
+            }
 
-                String filename = _download_path + "/" + _file_name;
+            if (!_exit) {
 
-                _file = new File(filename);
+                String filename = finalTarget.toString();
+
+                _file = finalTarget.toFile();
 
                 if (_file.getParent() != null) {
                     File path = new File(_file.getParent());
@@ -724,238 +796,226 @@ public class Download implements Transference, Runnable, SecureSingleThreadNotif
                             _file_name = _file_name + suffix;
                         }
 
-                        filename = _download_path + "/" + _file_name;
-
-                        _file = new File(filename);
+                        finalTarget = baseDir.resolve(_file_name).normalize();
+                        filename = finalTarget.toString();
+                        _file = finalTarget.toFile();
                     }
-
-                    getView().printStatusNormal("Starting download (retrieving MEGA temp link), please wait...");
-
-                    _last_download_url = getMegaFileDownloadUrl(_url);
 
                     if (!_exit) {
 
-                        String temp_filename = (getCustom_chunks_dir() != null ? getCustom_chunks_dir() : _download_path) + "/" + _file_name + ".mctemp";
+                        String tempBaseDir = (getCustom_chunks_dir() != null && !getCustom_chunks_dir().isBlank()) ? getCustom_chunks_dir() : _download_path;
+                        java.nio.file.Path partPath = Paths.get(tempBaseDir).toAbsolutePath().normalize().resolve(_file_name + ".mbpart").normalize();
+                        java.nio.file.Path legacyMctemp = Paths.get(tempBaseDir).toAbsolutePath().normalize().resolve(_file_name + ".mctemp").normalize();
+                        java.nio.file.Path statePath = partPath.getParent().resolve(MiscTools.HashString("sha1", _url) + ".mbstate");
 
-                        _file = new File(temp_filename);
+                        _part_path = partPath;
+                        _file = partPath.toFile();
 
-                        if (_file.getParent() != null) {
-                            File path = new File(_file.getParent());
-
-                            path.mkdirs();
+                        if (partPath.getParent() != null) {
+                            Files.createDirectories(partPath.getParent());
                         }
 
-                        if (_file.exists()) {
-                            getView().printStatusNormal("File exists, resuming download...");
+                        int chunkMulti = _use_slots ? CHUNK_SIZE_MULTI : 1;
+                        _state_store = new DownloadStateStore(statePath, _url, _file_size, chunkMulti);
 
-                            long max_size = calculateMaxTempFileSize(_file.length());
-
-                            if (max_size != _file.length()) {
-
-                                LOG.log(Level.INFO, "{0} Downloader truncating mctemp file {1} -> {2} ", new Object[]{Thread.currentThread().getName(), _file.length(), max_size});
-
-                                getView().printStatusNormal("Truncating temp file...");
-
-                                try (FileChannel out_truncate = new FileOutputStream(temp_filename, true).getChannel()) {
+                        if (!Files.exists(partPath) && Files.exists(legacyMctemp)) {
+                            getView().printStatusNormal("Migrating previous temp download...");
+                            Files.move(legacyMctemp, partPath, StandardCopyOption.REPLACE_EXISTING);
+                            long max_size = calculateMaxTempFileSize(Files.size(partPath));
+                            if (max_size != Files.size(partPath)) {
+                                try (FileChannel out_truncate = FileChannel.open(partPath, java.nio.file.StandardOpenOption.WRITE)) {
                                     out_truncate.truncate(max_size);
                                 }
                             }
-
-                            setProgress(_file.length());
-
-                            _last_chunk_id_dispatched = calculateLastWrittenChunk(_progress);
-
+                            _state_store.markPrefixCompleted(max_size, chunkMulti);
                         } else {
-                            setProgress(0);
+                            _state_store.loadIfCompatible(partPath);
                         }
 
-                        _output_stream = new BufferedOutputStream(new FileOutputStream(_file, (_progress > 0)));
+                        long recoveredBytes = _state_store.getCompletedBytes();
+                        setProgress(recoveredBytes);
+                        if (recoveredBytes > 0) {
+                            getView().printStatusNormal("Resuming download (" + formatBytes(recoveredBytes) + " / " + formatBytes(_file_size) + ")...");
+                            getView().updateProgressBar(recoveredBytes, _progress_bar_rate);
+                        }
 
-                        _thread_pool.execute(getProgress_meter());
+                        _byte_file_key = initMEGALinkKey(_file_key);
+                        _byte_file_iv = initMEGALinkKeyIV(_file_key);
 
-                        getMain_panel().getGlobal_dl_speed().attachTransference(this);
+                        if (_progress < _file_size) {
+                            getView().printStatusNormal("Starting download (retrieving MEGA temp link), please wait...");
 
-                        synchronized (_workers_lock) {
+                            _last_download_url = getMegaFileDownloadUrl(_url);
+                        }
 
-                            if (_use_slots) {
+                        if (!_exit && _progress < _file_size) {
 
-                                _chunkmanager = new ChunkWriterManager(this);
+                            _part_channel = FileChannel.open(partPath,
+                                    java.nio.file.StandardOpenOption.CREATE,
+                                    java.nio.file.StandardOpenOption.READ,
+                                    java.nio.file.StandardOpenOption.WRITE);
 
-                                _thread_pool.execute(_chunkmanager);
+                            _thread_pool.execute(getProgress_meter());
 
-                                _slots = getMain_panel().getDefault_slots_down();
+                            getMain_panel().getGlobal_dl_speed().attachTransference(this);
 
-                                final int initial_slots = _slots;
-                                MiscTools.GUIRun(() -> _view.getSlots_spinner().setValue(initial_slots));
+                            synchronized (_workers_lock) {
 
-                                for (int t = 1; t <= _slots; t++) {
-                                    ChunkDownloader c = new ChunkDownloader(t, this);
+                                if (_use_slots) {
+
+                                    _slots = getMain_panel().getDefault_slots_down();
+
+                                    final int initial_slots = _slots;
+                                    MiscTools.GUIRun(() -> _view.getSlots_spinner().setValue(initial_slots));
+
+                                    for (int t = 1; t <= _slots; t++) {
+                                        ChunkDownloader c = new ChunkDownloader(t, this);
+
+                                        _chunkworkers.add(c);
+
+                                        _thread_pool.execute(c);
+                                    }
+
+                                    MiscTools.GUIRun(() -> {
+                                        for (JComponent c : new JComponent[]{getView().getSlots_label(), getView().getSlots_spinner(), getView().getSlot_status_label()}) {
+
+                                            c.setVisible(true);
+                                        }
+                                    });
+
+                                } else {
+
+                                    ChunkDownloaderMono c = new ChunkDownloaderMono(this);
 
                                     _chunkworkers.add(c);
 
                                     _thread_pool.execute(c);
-                                }
 
-                                MiscTools.GUIRun(() -> {
-                                    for (JComponent c : new JComponent[]{getView().getSlots_label(), getView().getSlots_spinner(), getView().getSlot_status_label()}) {
-
-                                        c.setVisible(true);
-                                    }
-                                });
-
-                            } else {
-
-                                ChunkDownloaderMono c = new ChunkDownloaderMono(this);
-
-                                _chunkworkers.add(c);
-
-                                _thread_pool.execute(c);
-
-                                MiscTools.GUIRun(() -> {
-                                    for (JComponent c1 : new JComponent[]{getView().getSlots_label(), getView().getSlots_spinner(), getView().getSlot_status_label()}) {
-                                        c1.setVisible(false);
-                                    }
-                                });
-                            }
-                        }
-
-                        getView().printStatusNormal(LabelTranslatorSingleton.getInstance().translate("Downloading file from mega ") + (_ma.getFull_email() != null ? "(" + _ma.getFull_email() + ")" : "") + " ...");
-
-                        MiscTools.GUIRun(() -> {
-                            for (JComponent c : new JComponent[]{getView().getPause_button(), getView().getProgress_pbar()}) {
-
-                                c.setVisible(true);
-                            }
-                        });
-
-                        THREAD_POOL.execute(() -> {
-
-                            // PROGRESS WATCHDOG. Slices its wait into 10 s chunks
-                            // so it can pick the right stall-timeout based on
-                            // live worker state: when at least one chunk worker
-                            // is in 509 backoff, use the shorter
-                            // QUOTA_STALL_TIMEOUT_DEFAULT (default 180 s) instead
-                            // of the generic 600 s. Quota stalls almost always
-                            // clear within a minute once the user activates a
-                            // VPN; making them wait 10 min for the auto-retry
-                            // path is a bad default. (#751)
-                            LOG.log(Level.INFO, "{0} PROGRESS WATCHDOG HELLO!", Thread.currentThread().getName());
-
-                            final long generic_timeout_ms = PROGRESS_WATCHDOG_TIMEOUT * 1000L;
-                            String quota_stall_setting = selectSettingValue("quota_stall_timeout");
-                            int quota_stall_secs = QUOTA_STALL_TIMEOUT_DEFAULT;
-                            if (quota_stall_setting != null) {
-                                try {
-                                    int v = Integer.parseInt(quota_stall_setting);
-                                    if (v >= 30 && v <= 3600) {
-                                        quota_stall_secs = v;
-                                    }
-                                } catch (NumberFormatException ignore) {
+                                    MiscTools.GUIRun(() -> {
+                                        for (JComponent c1 : new JComponent[]{getView().getSlots_label(), getView().getSlots_spinner(), getView().getSlot_status_label()}) {
+                                            c1.setVisible(false);
+                                        }
+                                    });
                                 }
                             }
-                            final long quota_timeout_ms = quota_stall_secs * 1000L;
 
-                            long last_progress = getProgress();
-                            long stall_started_ms = System.currentTimeMillis();
-                            String triggered_reason = null;
+                            getView().printStatusNormal(LabelTranslatorSingleton.getInstance().translate("Downloading file from mega ") + (_ma.getFull_email() != null ? "(" + _ma.getFull_email() + ")" : "") + " ...");
 
-                            while (!isExit() && !_thread_pool.isShutdown() && getProgress() < getFile_size()) {
+                            MiscTools.GUIRun(() -> {
+                                for (JComponent c : new JComponent[]{getView().getPause_button(), getView().getProgress_pbar()}) {
 
-                                synchronized (_progress_watchdog_lock) {
+                                    c.setVisible(true);
+                                }
+                            });
+
+                            THREAD_POOL.execute(() -> {
+                                LOG.log(Level.INFO, "{0} PROGRESS WATCHDOG HELLO!", Thread.currentThread().getName());
+
+                                final long generic_timeout_ms = PROGRESS_WATCHDOG_TIMEOUT * 1000L;
+                                String quota_stall_setting = selectSettingValue("quota_stall_timeout");
+                                int quota_stall_secs = QUOTA_STALL_TIMEOUT_DEFAULT;
+                                if (quota_stall_setting != null) {
                                     try {
-                                        _progress_watchdog_lock.wait(10_000L);
-                                    } catch (InterruptedException ex) {
-                                        Thread.currentThread().interrupt();
-                                        Logger.getLogger(Download.class.getName()).log(Level.FINE, "watchdog wait interrupted");
+                                        int v = Integer.parseInt(quota_stall_setting);
+                                        if (v >= 30 && v <= 3600) {
+                                            quota_stall_secs = v;
+                                        }
+                                    } catch (NumberFormatException ignore) {
+                                    }
+                                }
+                                final long quota_timeout_ms = quota_stall_secs * 1000L;
+
+                                long last_progress = getProgress();
+                                long stall_started_ms = System.currentTimeMillis();
+                                String triggered_reason = null;
+
+                                while (!isExit() && !_thread_pool.isShutdown() && getProgress() < getFile_size()) {
+
+                                    synchronized (_progress_watchdog_lock) {
+                                        try {
+                                            _progress_watchdog_lock.wait(10_000L);
+                                        } catch (InterruptedException ex) {
+                                            Thread.currentThread().interrupt();
+                                            break;
+                                        }
+                                    }
+
+                                    if (isPaused()) {
+                                        stall_started_ms = System.currentTimeMillis();
+                                        last_progress = getProgress();
+                                        continue;
+                                    }
+
+                                    long current_progress = getProgress();
+                                    if (current_progress > last_progress) {
+                                        stall_started_ms = System.currentTimeMillis();
+                                        last_progress = current_progress;
+                                        continue;
+                                    }
+
+                                    boolean any_509 = false;
+                                    synchronized (_workers_lock) {
+                                        for (ChunkDownloader cd : _chunkworkers) {
+                                            if (cd.isIn_509_backoff()) {
+                                                any_509 = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+
+                                    long timeout_ms = any_509 ? quota_timeout_ms : generic_timeout_ms;
+                                    long stalled_ms = System.currentTimeMillis() - stall_started_ms;
+
+                                    if (stalled_ms >= timeout_ms) {
+                                        if (any_509) {
+                                            triggered_reason = "QUOTA STALL TIMEOUT (no progress for " + (stalled_ms / 1000) + "s on 509)";
+                                        } else {
+                                            triggered_reason = "PROGRESS WATCHDOG TIMEOUT!";
+                                        }
                                         break;
                                     }
                                 }
 
-                                if (isPaused()) {
-                                    // Don't accumulate stall time while paused.
-                                    stall_started_ms = System.currentTimeMillis();
-                                    last_progress = getProgress();
-                                    continue;
+                                if (triggered_reason != null && !isExit() && !_thread_pool.isShutdown() && _status_error == null && getProgress() < getFile_size()) {
+                                    _auto_retry_on_error = true;
+                                    stopDownloader(triggered_reason);
                                 }
 
-                                long current_progress = getProgress();
-                                if (current_progress > last_progress) {
-                                    stall_started_ms = System.currentTimeMillis();
-                                    last_progress = current_progress;
-                                    continue;
-                                }
+                                LOG.log(Level.INFO, "{0} PROGRESS WATCHDOG BYE BYE!", Thread.currentThread().getName());
 
-                                // No progress this slice. Pick the timeout.
-                                boolean any_509 = false;
-                                synchronized (_workers_lock) {
-                                    for (ChunkDownloader cd : _chunkworkers) {
-                                        if (cd.isIn_509_backoff()) {
-                                            any_509 = true;
-                                            break;
-                                        }
-                                    }
-                                }
+                            });
 
-                                long timeout_ms = any_509 ? quota_timeout_ms : generic_timeout_ms;
-                                long stalled_ms = System.currentTimeMillis() - stall_started_ms;
+                            secureWait();
 
-                                if (stalled_ms >= timeout_ms) {
-                                    if (any_509) {
-                                        triggered_reason = "QUOTA STALL TIMEOUT (no progress for " + (stalled_ms / 1000) + "s on 509)";
-                                    } else {
-                                        triggered_reason = "PROGRESS WATCHDOG TIMEOUT!";
-                                    }
-                                    break;
-                                }
+                            LOG.log(Level.INFO, "{0} Chunkdownloaders finished!", Thread.currentThread().getName());
+
+                            getProgress_meter().setExit(true);
+                            getProgress_meter().secureNotify();
+
+                            try {
+                                _thread_pool.shutdown();
+                                _thread_pool.awaitTermination(MAX_WAIT_WORKERS_SHUTDOWN, TimeUnit.SECONDS);
+                            } catch (InterruptedException ex) {
+                                LOG.log(Level.SEVERE, ex.getMessage());
                             }
 
-                            if (triggered_reason != null && !isExit() && !_thread_pool.isShutdown() && _status_error == null && getProgress() < getFile_size()) {
-                                // Flag for auto-restart so the download re-arms itself a few seconds
-                                // after the watchdog fires. The most common cause of a stale-progress
-                                // timeout is MEGA HTTP 509 (bandwidth quota) -- the user often clears
-                                // it by switching IP (VPN). Without auto-retry the download stays in
-                                // FATAL ERROR until the user manually clicks Restart on every row
-                                // (or restarts the whole app to re-provision from the queue). (#751)
-                                _auto_retry_on_error = true;
-                                stopDownloader(triggered_reason);
+                            if (!_thread_pool.isTerminated()) {
+                                _thread_pool.shutdownNow();
                             }
 
-                            LOG.log(Level.INFO, "{0} PROGRESS WATCHDOG BYE BYE!", Thread.currentThread().getName());
-
-                        });
-
-                        secureWait();
-
-                        LOG.log(Level.INFO, "{0} Chunkdownloaders finished!", Thread.currentThread().getName());
-
-                        getProgress_meter().setExit(true);
-
-                        getProgress_meter().secureNotify();
-
-                        try {
-
-                            _thread_pool.shutdown();
-
-                            LOG.log(Level.INFO, "{0} Waiting all threads to finish...", Thread.currentThread().getName());
-
-                            _thread_pool.awaitTermination(MAX_WAIT_WORKERS_SHUTDOWN, TimeUnit.SECONDS);
-
-                        } catch (InterruptedException ex) {
-                            LOG.log(Level.SEVERE, ex.getMessage());
+                            getMain_panel().getGlobal_dl_speed().detachTransference(this);
                         }
 
-                        if (!_thread_pool.isTerminated()) {
-
-                            LOG.log(Level.INFO, "{0} Forcing thread pool shutdown...", Thread.currentThread().getName());
-
-                            _thread_pool.shutdownNow();
+                        if (_state_store != null) {
+                            _state_store.persistNow();
                         }
-
-                        LOG.log(Level.INFO, "{0} Downloader thread pool finished!", Thread.currentThread().getName());
-
-                        getMain_panel().getGlobal_dl_speed().detachTransference(this);
-
-                        _output_stream.close();
+                        if (_part_channel != null) {
+                            try {
+                                _part_channel.close();
+                            } catch (IOException ignore) {
+                            }
+                            _part_channel = null;
+                        }
 
                         MiscTools.GUIRun(() -> {
                             for (JComponent c : new JComponent[]{getView().getSpeed_label(), getView().getPause_button(), getView().getStop_button(), getView().getSlots_label(), getView().getSlots_spinner(), getView().getKeep_temp_checkbox()}) {
@@ -966,18 +1026,17 @@ public class Download implements Transference, Runnable, SecureSingleThreadNotif
 
                         if (_progress == _file_size) {
 
-                            if (_file.length() != _file_size) {
-
-                                throw new IOException("El tamaño del fichero es incorrecto!");
+                            if (!Files.exists(partPath) || Files.size(partPath) != _file_size) {
+                                throw new IOException("Downloaded file size mismatch!");
                             }
 
-                            Files.move(Paths.get(_file.getAbsolutePath()), Paths.get(filename), StandardCopyOption.REPLACE_EXISTING);
+                            Files.move(partPath, finalTarget, StandardCopyOption.REPLACE_EXISTING);
 
                             if (_custom_chunks_dir != null) {
 
-                                File temp_parent_download_dir = new File(temp_filename).getParentFile();
+                                File temp_parent_download_dir = partPath.toFile().getParentFile();
 
-                                while (!temp_parent_download_dir.getAbsolutePath().equals(_custom_chunks_dir) && temp_parent_download_dir.listFiles().length == 0) {
+                                while (temp_parent_download_dir != null && !temp_parent_download_dir.getAbsolutePath().equals(_custom_chunks_dir) && temp_parent_download_dir.listFiles() != null && temp_parent_download_dir.listFiles().length == 0) {
                                     temp_parent_download_dir.delete();
                                     temp_parent_download_dir = temp_parent_download_dir.getParentFile();
                                 }
@@ -1012,7 +1071,12 @@ public class Download implements Transference, Runnable, SecureSingleThreadNotif
                                     } else {
                                         getView().printStatusNormal("Checking file integrity, please wait...");
 
-                                        if (verifyFileCBCMAC(filename)) {
+                                        Boolean fastMac = _state_store != null
+                                                ? CryptTools.verifyMetaMacFromStore(_state_store, _file_key, _file_size)
+                                                : null;
+                                        boolean verified = (fastMac != null) ? fastMac : verifyFileCBCMAC(filename);
+
+                                        if (verified) {
                                             getView().printStatusOK("File successfully downloaded! (Integrity check PASSED)");
                                         } else if (!_exit) {
                                             _status_error = "BAD NEWS :( File is DAMAGED! (deleted)";
@@ -1042,6 +1106,14 @@ public class Download implements Transference, Runnable, SecureSingleThreadNotif
 
                             }
 
+                            if (_state_store != null) {
+                                _state_store.deleteStateFile();
+                            }
+
+                        } else if (_main_panel.isExit()) {
+
+                            getView().printStatusNormal("Paused for restart...");
+
                         } else if (_status_error != null) {
 
                             getView().hideAllExceptStatus();
@@ -1062,6 +1134,10 @@ public class Download implements Transference, Runnable, SecureSingleThreadNotif
 
                             getView().printStatusError(_status_error);
                         }
+
+                    } else if (_main_panel.isExit()) {
+
+                        getView().printStatusNormal("Paused for restart...");
 
                     } else if (_status_error != null) {
 
@@ -1094,6 +1170,10 @@ public class Download implements Transference, Runnable, SecureSingleThreadNotif
                     getView().printStatusError(_status_error);
                 }
 
+            } else if (_main_panel.isExit()) {
+
+                getView().printStatusNormal("Paused for restart...");
+
             } else if (_status_error != null) {
 
                 getView().hideAllExceptStatus();
@@ -1120,8 +1200,21 @@ public class Download implements Transference, Runnable, SecureSingleThreadNotif
 
             getView().printStatusError(_status_error);
 
-            LOG.log(Level.SEVERE, ex.getMessage());
+            LOG.log(Level.SEVERE, ex.getMessage(), ex);
         } finally {
+
+            if (_state_store != null) {
+                _state_store.persistNow();
+            }
+
+            if (_part_channel != null) {
+                try {
+                    _part_channel.close();
+                } catch (IOException close_ex) {
+                    LOG.log(Level.FINE, "Closing part channel on exit: {0}", close_ex.getMessage());
+                }
+                _part_channel = null;
+            }
 
             if (_output_stream != null) {
                 try {
@@ -1137,28 +1230,17 @@ public class Download implements Transference, Runnable, SecureSingleThreadNotif
             }
         }
 
-        if (_file != null && !getView().isKeepTempFileSelected()) {
-            _file.delete();
-
-            if (getChunkmanager() != null) {
-
-                getChunkmanager().delete_chunks_temp_dir();
-
-                File parent_download_dir = new File(getDownload_path() + "/" + getFile_name()).getParentFile();
-
-                while (!parent_download_dir.getAbsolutePath().equals(getDownload_path()) && parent_download_dir.listFiles().length == 0) {
-                    parent_download_dir.delete();
-                    parent_download_dir = parent_download_dir.getParentFile();
-                }
-
-                if (!(new File(getDownload_path() + "/" + getFile_name()).getParentFile().exists())) {
-
-                    getView().getOpen_folder_button().setEnabled(false);
-                }
+        if (!_main_panel.isExit() && _part_path != null && !getView().isKeepTempFileSelected() && (_canceled || !_auto_retry_on_error)) {
+            try {
+                Files.deleteIfExists(_part_path);
+            } catch (IOException ignore) {
+            }
+            if (_state_store != null) {
+                _state_store.deleteStateFile();
             }
         }
 
-        if ((_status_error == null && !_canceled) || global_cancel || !_auto_retry_on_error) {
+        if (!_main_panel.isExit() && ((_status_error == null && !_canceled) || global_cancel || !_auto_retry_on_error)) {
 
             try {
                 deleteDownload(_url);
@@ -1340,9 +1422,11 @@ public class Download implements Transference, Runnable, SecureSingleThreadNotif
 
                 File file = new File(filename);
 
-                File temp_file = new File(filename + ".mctemp");
+                String tempDir = (getCustom_chunks_dir() != null && !getCustom_chunks_dir().isBlank()) ? getCustom_chunks_dir() : _download_path;
+                File temp_file = new File(tempDir + "/" + _file_name + ".mctemp");
+                File part_file = new File(tempDir + "/" + _file_name + ".mbpart");
 
-                if (file.exists() && !temp_file.exists() && file.length() != _file_size) {
+                if (file.exists() && !temp_file.exists() && !part_file.exists() && file.length() != _file_size) {
                     _file_name = _file_name.replaceFirst("\\..*$", "_" + MiscTools.genID(8) + "_$0");
                 }
 
@@ -1354,9 +1438,7 @@ public class Download implements Transference, Runnable, SecureSingleThreadNotif
                 //Resuming single file links and new/resuming folder links
                 try {
 
-                    deleteDownload(_url); //If resuming
-
-                    _file_name = DBTools.insertDownloadReturningName(_url, _ma.getFull_email(), _download_path, _file_name, _file_key, _file_size, _file_pass, _file_noexpire, _custom_chunks_dir);
+                    _file_name = DBTools.upsertDownloadReturningName(_url, _ma.getFull_email(), _download_path, _file_name, _file_key, _file_size, _file_pass, _file_noexpire, _custom_chunks_dir);
 
                     _provision_ok = true;
 
@@ -1656,87 +1738,53 @@ public class Download implements Transference, Runnable, SecureSingleThreadNotif
         return false;
     }
 
-    private boolean verifyFileCBCMAC(String filename) throws FileNotFoundException, Exception, NoSuchAlgorithmException, NoSuchPaddingException, InvalidKeyException, InvalidAlgorithmParameterException, IllegalBlockSizeException, BadPaddingException {
-
-        int old_thread_priority = Thread.currentThread().getPriority();
-
+    private boolean verifyFileCBCMAC(String filename) throws Exception {
         int[] int_key = bin2i32a(UrlBASE642Bin(_file_key));
-        int[] iv = new int[]{int_key[4], int_key[5]};
         int[] meta_mac = new int[]{int_key[6], int_key[7]};
-        int[] file_mac = {0, 0, 0, 0};
-        int[] cbc_iv = {0, 0, 0, 0};
-
         byte[] byte_file_key = initMEGALinkKey(getFile_key());
+        byte[] byte_file_iv = initMEGALinkKeyIV(getFile_key());
+        byte[] file_mac = new byte[16];
+        Cipher ecb = Cipher.getInstance("AES/ECB/NoPadding");
+        ecb.init(Cipher.ENCRYPT_MODE, new javax.crypto.spec.SecretKeySpec(byte_file_key, "AES"));
 
-        Cipher cryptor = genCrypter("AES", "AES/CBC/NoPadding", byte_file_key, i32a2bin(cbc_iv));
-
-        try (BufferedInputStream is = new BufferedInputStream(new FileInputStream(filename))) {
-
+        byte[] buf = new byte[256 * 1024];
+        try (FileInputStream fis = new FileInputStream(filename)) {
             long chunk_id = 1L;
             long tot = 0L;
-            byte[] byte_block = new byte[16];
-            int[] int_block;
-            int reads;
-            int[] chunk_mac = new int[4];
-
             try {
                 while (!_exit) {
-
                     long chunk_offset = ChunkWriterManager.calculateChunkOffset(chunk_id, 1);
-
                     long chunk_size = ChunkWriterManager.calculateChunkSize(chunk_id, this.getFile_size(), chunk_offset, 1);
-
                     ChunkWriterManager.checkChunkID(chunk_id, this.getFile_size(), chunk_offset);
 
+                    CryptTools.SubChunkMacAccumulator acc = new CryptTools.SubChunkMacAccumulator(
+                            chunk_id, 1, this.getFile_size(), byte_file_key, byte_file_iv);
+                    long remaining = chunk_size;
+                    while (remaining > 0 && !_exit) {
+                        int n = fis.read(buf, 0, (int) Math.min(buf.length, remaining));
+                        if (n == -1) {
+                            throw new IOException("Unexpected EOF during MAC verification");
+                        }
+                        acc.update(buf, 0, n);
+                        remaining -= n;
+                    }
+                    byte[] cMac = acc.finish().get(chunk_id);
+                    if (cMac != null) {
+                        for (int i = 0; i < 16; i++) {
+                            file_mac[i] ^= cMac[i];
+                        }
+                        file_mac = ecb.doFinal(file_mac);
+                    }
                     tot += chunk_size;
-
-                    chunk_mac[0] = iv[0];
-                    chunk_mac[1] = iv[1];
-                    chunk_mac[2] = iv[0];
-                    chunk_mac[3] = iv[1];
-
-                    long conta_chunk = 0L;
-
-                    while (conta_chunk < chunk_size && (reads = is.read(byte_block)) != -1) {
-
-                        if (reads < byte_block.length) {
-
-                            for (int i = reads; i < byte_block.length; i++) {
-                                byte_block[i] = 0;
-                            }
-                        }
-
-                        int_block = bin2i32a(byte_block);
-
-                        for (int i = 0; i < chunk_mac.length; i++) {
-                            chunk_mac[i] ^= int_block[i];
-                        }
-
-                        chunk_mac = bin2i32a(cryptor.doFinal(i32a2bin(chunk_mac)));
-
-                        conta_chunk += reads;
-                    }
-
-                    for (int i = 0; i < file_mac.length; i++) {
-                        file_mac[i] ^= chunk_mac[i];
-                    }
-
-                    file_mac = bin2i32a(cryptor.doFinal(i32a2bin(file_mac)));
-
                     setProgress(tot);
-
                     chunk_id++;
-
                 }
-
-            } catch (ChunkInvalidException e) {
-
+            } catch (ChunkInvalidException ignore) {
             }
-
-            int[] cbc = {file_mac[0] ^ file_mac[1], file_mac[2] ^ file_mac[3]};
-
-            return (cbc[0] == meta_mac[0] && cbc[1] == meta_mac[1]);
         }
+
+        int[] fm = bin2i32a(file_mac);
+        return (fm[0] ^ fm[1]) == meta_mac[0] && (fm[2] ^ fm[3]) == meta_mac[1];
     }
 
     public void stopDownloader() {
@@ -1992,12 +2040,22 @@ public class Download implements Transference, Runnable, SecureSingleThreadNotif
             }
 
             Long next_id;
-
-            if ((next_id = _rejectedChunkIds.poll()) != null) {
-                return next_id;
-            } else {
-                return ++_last_chunk_id_dispatched;
+            while ((next_id = _rejectedChunkIds.poll()) != null) {
+                if (_state_store == null || !_state_store.isChunkCompleted(next_id)) {
+                    return next_id;
+                }
             }
+
+            if (_state_store != null) {
+                long candidate = _state_store.nextUncompletedChunkId(_last_chunk_id_dispatched + 1);
+                if (candidate <= 0) {
+                    throw new ChunkInvalidException(null);
+                }
+                _last_chunk_id_dispatched = candidate;
+                return candidate;
+            }
+
+            return ++_last_chunk_id_dispatched;
         }
 
     }
