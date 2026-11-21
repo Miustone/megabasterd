@@ -1814,18 +1814,12 @@ public class MiscTools {
 
     public static void restartApplication() {
 
-        java.util.List<String> argv = new java.util.ArrayList<>();
-
-        argv.add(System.getProperty("java.home") + File.separator + "bin" + File.separator + "java");
-
-        argv.addAll(ManagementFactory.getRuntimeMXBean().getInputArguments());
-
-        argv.add("-cp");
-        argv.add(ManagementFactory.getRuntimeMXBean().getClassPath());
-
-        argv.add(MainPanel.class.getName());
-        argv.add("native");
-        argv.add("1");
+        java.util.List<String> argv = buildRestartCommand(
+                System.getProperty("jpackage.app-path"),
+                System.getProperty("java.home"),
+                ManagementFactory.getRuntimeMXBean().getInputArguments(),
+                ManagementFactory.getRuntimeMXBean().getClassPath(),
+                MiscTools.isWindowsOS());
 
         try {
             new ProcessBuilder(argv).inheritIO().start();
@@ -1834,6 +1828,41 @@ public class MiscTools {
         }
 
         System.exit(2);
+    }
+
+    static java.util.List<String> buildRestartCommand(
+            String jpackageAppPath,
+            String javaHome,
+            java.util.List<String> inputArguments,
+            String classPath,
+            boolean windows) {
+
+        java.util.List<String> argv = new java.util.ArrayList<>();
+
+        if (jpackageAppPath != null && !jpackageAppPath.isBlank() && new File(jpackageAppPath).isFile()) {
+            argv.add(jpackageAppPath);
+            argv.add("native");
+            argv.add("1");
+            return argv;
+        }
+
+        String binDir = javaHome + File.separator + "bin" + File.separator;
+        String javaExec = binDir + "java";
+        if (windows) {
+            File javaw = new File(binDir + "javaw.exe");
+            javaExec = javaw.isFile() ? javaw.getAbsolutePath() : (binDir + "java.exe");
+        }
+
+        argv.add(javaExec);
+        if (inputArguments != null) {
+            argv.addAll(inputArguments);
+        }
+        argv.add("-cp");
+        argv.add(classPath != null ? classPath : "");
+        argv.add(MainPanel.class.getName());
+        argv.add("native");
+        argv.add("1");
+        return argv;
     }
 
     /*

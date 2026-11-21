@@ -61,4 +61,19 @@ class SystemBenchmarkAndResetTest {
         assertTrue(Files.exists(fakeHome.resolve("Documents/keep_me.txt")));
         assertTrue(Files.exists(unrelatedFile));
     }
+
+    @Test
+    void restartCommandPrefersJpackageLauncherWhenPresent(@TempDir Path tmp) throws Exception {
+        Path exe = tmp.resolve("MegaBasterd.exe");
+        Files.writeString(exe, "stub");
+
+        List<String> jpackageCmd = MiscTools.buildRestartCommand(
+                exe.toString(), "C:\\jdk", List.of("-Xmx1g"), "app.jar", true);
+        assertEquals(List.of(exe.toString(), "native", "1"), jpackageCmd);
+
+        List<String> fallbackCmd = MiscTools.buildRestartCommand(
+                null, tmp.toString(), List.of("--enable-native-access=ALL-UNNAMED"), "app.jar", false);
+        assertTrue(fallbackCmd.get(0).endsWith("java"));
+        assertTrue(fallbackCmd.contains(MainPanel.class.getName()));
+    }
 }
