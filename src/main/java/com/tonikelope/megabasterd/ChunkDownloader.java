@@ -393,10 +393,10 @@ public class ChunkDownloader implements Runnable, SecureSingleThreadNotifiable {
 
                 try {
                     if (!_exit && !_download.isStopped() && !_download.getMain_panel().isExit()) {
-                        HttpRequest request = HttpRequest.newBuilder(URI.create(chunk_url))
+                        HttpRequest request = HttpRequest.newBuilder(URI.create(MiscTools.upgradeMegaStorageUrlToHttps(chunk_url)))
                                 .timeout(Duration.ofMillis(readTimeoutMs))
                                 .header("User-Agent", MainPanel.DEFAULT_USER_AGENT)
-                                .GET()
+                                .POST(HttpRequest.BodyPublishers.noBody())
                                 .build();
 
                         HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());

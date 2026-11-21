@@ -162,10 +162,10 @@ public class ChunkDownloaderMono extends ChunkDownloader {
                 http_error = 0;
 
                 try {
-                    HttpRequest request = HttpRequest.newBuilder(URI.create(chunk_url))
+                    HttpRequest request = HttpRequest.newBuilder(URI.create(MiscTools.upgradeMegaStorageUrlToHttps(chunk_url)))
                             .timeout(Duration.ofMillis(readTimeoutMs))
                             .header("User-Agent", MainPanel.DEFAULT_USER_AGENT)
-                            .GET()
+                            .POST(HttpRequest.BodyPublishers.noBody())
                             .build();
 
                     HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());

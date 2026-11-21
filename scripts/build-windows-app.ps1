@@ -59,7 +59,8 @@ try {
         "--main-class", "com.tonikelope.megabasterd.MainPanel",
         "--dest", $destDir,
         "--icon", "$RepoRoot\src\main\resources\images\pica_roja_big.ico",
-        "--java-options", "--enable-native-access=ALL-UNNAMED"
+        "--java-options", "--enable-native-access=ALL-UNNAMED",
+        "--java-options", "-Djava.net.preferIPv6Addresses=system"
     )
 
     & "$JdkHome\bin\jpackage.exe" @jpackageArgs

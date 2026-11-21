@@ -1415,7 +1415,20 @@ public class MiscTools {
         return res;
     }
 
+    public static String upgradeMegaStorageUrlToHttps(String url) {
+        if (url == null) {
+            return null;
+        }
+        String lower = url.toLowerCase(java.util.Locale.ROOT);
+        if (lower.startsWith("http://") && lower.contains(".userstorage.mega.co.nz/")) {
+            return "https://" + url.substring(7);
+        }
+        return url;
+    }
+
     public static boolean checkMegaDownloadUrl(String string_url) {
+
+        string_url = upgradeMegaStorageUrlToHttps(string_url);
 
         if (string_url == null || "".equals(string_url)) {
             return false;
@@ -1423,7 +1436,7 @@ public class MiscTools {
 
         HttpURLConnection con = null;
 
-        int http_status = 0, http_error = 0;
+        int http_status = 0, http_error = 0, attempts = 0;
 
         String current_smart_proxy = null;
 
@@ -1432,6 +1445,8 @@ public class MiscTools {
         ArrayList<String> excluded_proxy_list = new ArrayList<>();
 
         do {
+            attempts++;
+            http_error = 0;
 
             SmartMegaProxyManager proxy_manager = MainPanel.getProxy_manager();
 
@@ -1533,6 +1548,9 @@ public class MiscTools {
                 if (current_smart_proxy != null && proxy_manager != null) {
                     con.setConnectTimeout(proxy_manager.getProxy_timeout());
                     con.setReadTimeout(proxy_manager.getProxy_timeout() * 2);
+                } else {
+                    con.setConnectTimeout(5000);
+                    con.setReadTimeout(8000);
                 }
 
                 con.setUseCaches(false);
@@ -1549,7 +1567,7 @@ public class MiscTools {
                 }
 
             } catch (Exception ex) {
-                Logger.getLogger(MiscTools.class.getName()).log(Level.SEVERE, ex.getMessage());
+                Logger.getLogger(MiscTools.class.getName()).log(Level.WARNING, "checkMegaDownloadUrl failed: {0}", ex.getMessage());
             } finally {
 
                 if (con != null) {
@@ -1558,7 +1576,11 @@ public class MiscTools {
 
             }
 
-        } while (http_error == 509);
+        } while (http_error == 509
+                && MainPanel.isUse_smart_proxy()
+                && MainPanel.getProxy_manager() != null
+                && !MainPanel.isUse_proxy()
+                && attempts < 10);
 
         return http_status != 403;
     }

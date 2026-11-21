@@ -117,4 +117,17 @@ class SystemBenchmarkAndResetTest {
         assertTrue(resolved.startsWith(baseDir.toAbsolutePath().normalize()));
         assertEquals("Puddingnice", baseDir.toAbsolutePath().normalize().relativize(resolved).getName(0).toString());
     }
+
+    @Test
+    void upgradeMegaStorageUrlPromotesHttpStorageLinksOnly() {
+        assertEquals(
+                "https://gfs214n224.userstorage.mega.co.nz/dl/abc",
+                MiscTools.upgradeMegaStorageUrlToHttps("http://gfs214n224.userstorage.mega.co.nz/dl/abc"));
+        assertEquals(
+                "https://gfs214n224.userstorage.mega.co.nz/dl/abc",
+                MiscTools.upgradeMegaStorageUrlToHttps("https://gfs214n224.userstorage.mega.co.nz/dl/abc"));
+        assertEquals(
+                "http://127.0.0.1:1337/stream",
+                MiscTools.upgradeMegaStorageUrlToHttps("http://127.0.0.1:1337/stream"));
+    }
 }

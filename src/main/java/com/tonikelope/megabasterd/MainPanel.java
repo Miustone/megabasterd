@@ -288,6 +288,12 @@ public final class MainPanel {
     private static final Logger LOG = Logger.getLogger(MainPanel.class.getName());
     private static volatile boolean CHECK_RUNNING = true;
 
+    static {
+        if (System.getProperty("java.net.preferIPv6Addresses") == null) {
+            System.setProperty("java.net.preferIPv6Addresses", "system");
+        }
+    }
+
     public static void main(String args[]) {
 
         if (args.length > 0) {

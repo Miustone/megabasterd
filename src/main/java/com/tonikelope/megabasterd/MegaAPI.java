@@ -690,6 +690,10 @@ public class MegaAPI implements Serializable {
                     con.setRequestProperty("X-Hashcash", pending_hashcash_header);
                 }
 
+                con.setConnectTimeout(Transference.HTTP_CONNECT_TIMEOUT);
+
+                con.setReadTimeout(Transference.HTTP_READ_TIMEOUT);
+
                 con.setUseCaches(false);
 
                 con.setRequestMethod("POST");
@@ -832,6 +836,8 @@ public class MegaAPI implements Serializable {
 
             } catch (IOException ex) {
 
+                empty_response = true;
+
                 LOG.log(Level.SEVERE, _ctx() + " IOException on " + _redactUrl(url_api.toString()), ex);
 
             } finally {
@@ -902,13 +908,13 @@ public class MegaAPI implements Serializable {
         if (findFirstRegex("#N!", link, 0) != null) {
             String folder_id = findFirstRegex("###n=(.+)$", link, 1);
 
-            request = "[{\"a\":\"g\", \"g\":\"1\", \"n\":\"" + file_id + "\"}]";
+            request = "[{\"a\":\"g\", \"g\":\"1\", \"ssl\":2, \"n\":\"" + file_id + "\"}]";
 
             url_api = new URL(API_URL + "/cs?id=" + _nextSeqno() + (_sid != null ? "&sid=" + _sid : "") + _apiStdParams() + "&n=" + folder_id);
 
         } else {
 
-            request = "[{\"a\":\"g\", \"g\":\"1\", \"p\":\"" + file_id + "\"}]";
+            request = "[{\"a\":\"g\", \"g\":\"1\", \"ssl\":2, \"p\":\"" + file_id + "\"}]";
             url_api = new URL(API_URL + "/cs?id=" + _nextSeqno() + (_sid != null ? "&sid=" + _sid : "") + _apiStdParams());
         }
 
@@ -924,7 +930,7 @@ public class MegaAPI implements Serializable {
             throw new MegaAPIException(-101);
         }
 
-        return download_url;
+        return MiscTools.upgradeMegaStorageUrlToHttps(download_url);
     }
 
     public String[] getMegaFileMetadata(String link) throws MegaAPIException, MalformedURLException, IOException {
@@ -1219,7 +1225,11 @@ public class MegaAPI implements Serializable {
 
                         con.setDoOutput(true);
 
-                        con.setUseCaches(false);
+                        con.setConnectTimeout(Transference.HTTP_CONNECT_TIMEOUT);
+
+                con.setReadTimeout(Transference.HTTP_READ_TIMEOUT);
+
+                con.setUseCaches(false);
 
                         con.setRequestProperty("User-Agent", MainPanel.DEFAULT_USER_AGENT);
 
