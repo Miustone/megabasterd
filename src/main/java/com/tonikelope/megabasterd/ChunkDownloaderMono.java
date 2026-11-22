@@ -163,57 +163,57 @@ public class ChunkDownloaderMono extends ChunkDownloader {
                 http_error = 0;
 
                 try {
-                    HttpRequest request = HttpRequest.newBuilder(URI.create(MiscTools.upgradeMegaStorageUrlToHttps(chunk_url)))
-                            .timeout(Duration.ofMillis(readTimeoutMs))
-                            .header("User-Agent", MainPanel.DEFAULT_USER_AGENT)
-                            .POST(HttpRequest.BodyPublishers.noBody())
-                            .build();
+                    boolean allowFallback = (current_smart_proxy == null && !MainPanel.isUse_proxy());
+                    try (HttpClientFactory.StreamResponse response = HttpClientFactory.sendChunkPost(
+                            client,
+                            allowFallback,
+                            MiscTools.upgradeMegaStorageUrlToHttps(chunk_url),
+                            readTimeoutMs)) {
+                        int http_status = response.statusCode();
 
-                    HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
-                    int http_status = response.statusCode();
-
-                    if (http_status != 200) {
-                        http_error = http_status;
-                        try (InputStream err = response.body()) {
-                            if (err != null) {
-                                err.readAllBytes();
-                            }
-                        } catch (IOException ignore) {
-                        }
-                    } else {
-                        try (InputStream is = new ThrottledInputStream(response.body(), getDownload().getMain_panel().getStream_supervisor())) {
-                            int reads;
-                            while (!getDownload().isStopped() && !getDownload().getMain_panel().isExit() && chunk_reads < chunk_size
-                                    && (reads = is.read(chunk_buffer, (int) chunk_reads, (int) (chunk_size - chunk_reads))) != -1) {
-                                chunk_reads += reads;
-                                getDownload().getPartialProgress().add((long) reads);
-                                getDownload().getProgress_meter().secureNotify();
-                                if (getDownload().isPaused() && !getDownload().isStopped() && chunk_reads < chunk_size) {
-                                    getDownload().pause_worker_mono();
-                                    secureWait();
+                        if (http_status != 200) {
+                            http_error = http_status;
+                            if (response.body() != null) {
+                                try {
+                                    response.body().readAllBytes();
+                                } catch (IOException ignore) {
                                 }
                             }
-                        }
-
-                        if (chunk_reads == chunk_size) {
-                            Cipher decrypter = genDecrypter("AES", "AES/CTR/NoPadding", byte_file_key, forwardMEGALinkKeyIV(byte_iv, chunk_offset));
-                            int decLen = decrypter.doFinal(chunk_buffer, 0, (int) chunk_size, plain_buffer, 0);
-                            getDownload().writePartBytes(chunk_offset, plain_buffer, decLen);
-
-                            CryptTools.SubChunkMacAccumulator macAcc = new CryptTools.SubChunkMacAccumulator(
-                                    chunk_id, 1, getDownload().getFile_size(), byte_file_key, byte_iv);
-                            macAcc.update(plain_buffer, 0, decLen);
-                            Map<Long, byte[]> macs = macAcc.finish();
-                            if (stateStore != null) {
-                                stateStore.markChunkCompleted(chunk_id, chunk_size, macs);
+                        } else {
+                            try (InputStream is = new ThrottledInputStream(response.body(), getDownload().getMain_panel().getStream_supervisor())) {
+                                int reads;
+                                while (!getDownload().isStopped() && !getDownload().getMain_panel().isExit() && chunk_reads < chunk_size
+                                        && (reads = is.read(chunk_buffer, (int) chunk_reads, (int) (chunk_size - chunk_reads))) != -1) {
+                                    chunk_reads += reads;
+                                    getDownload().getPartialProgress().add((long) reads);
+                                    getDownload().getProgress_meter().secureNotify();
+                                    if (getDownload().isPaused() && !getDownload().isStopped() && chunk_reads < chunk_size) {
+                                        getDownload().pause_worker_mono();
+                                        secureWait();
+                                    }
+                                }
                             }
 
-                            chunk_error = false;
-                            http_error = 0;
-                            conta_error = 0;
-                            _ip_at_first_509 = null;
-                            _last_http_error = 0;
-                            excluded_proxy_list.clear();
+                            if (chunk_reads == chunk_size) {
+                                Cipher decrypter = genDecrypter("AES", "AES/CTR/NoPadding", byte_file_key, forwardMEGALinkKeyIV(byte_iv, chunk_offset));
+                                int decLen = decrypter.doFinal(chunk_buffer, 0, (int) chunk_size, plain_buffer, 0);
+                                getDownload().writePartBytes(chunk_offset, plain_buffer, decLen);
+
+                                CryptTools.SubChunkMacAccumulator macAcc = new CryptTools.SubChunkMacAccumulator(
+                                        chunk_id, 1, getDownload().getFile_size(), byte_file_key, byte_iv);
+                                macAcc.update(plain_buffer, 0, decLen);
+                                Map<Long, byte[]> macs = macAcc.finish();
+                                if (stateStore != null) {
+                                    stateStore.markChunkCompleted(chunk_id, chunk_size, macs);
+                                }
+
+                                chunk_error = false;
+                                http_error = 0;
+                                conta_error = 0;
+                                _ip_at_first_509 = null;
+                                _last_http_error = 0;
+                                excluded_proxy_list.clear();
+                            }
                         }
                     }
                 } catch (HttpTimeoutException tex) {

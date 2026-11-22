@@ -130,4 +130,12 @@ class SystemBenchmarkAndResetTest {
                 "http://127.0.0.1:1337/stream",
                 MiscTools.upgradeMegaStorageUrlToHttps("http://127.0.0.1:1337/stream"));
     }
+
+    @Test
+    void ipv6BlacklistTracksUnreachableHosts() {
+        String host = "dead-ipv6-test-node.invalid";
+        assertFalse(HttpClientFactory.isHostIpv6Blacklisted(host));
+        HttpClientFactory.markHostIpv6Blacklisted(host);
+        assertTrue(HttpClientFactory.isHostIpv6Blacklisted(host));
+    }
 }

@@ -394,85 +394,83 @@ public class ChunkDownloader implements Runnable, SecureSingleThreadNotifiable {
 
                 try {
                     if (!_exit && !_download.isStopped() && !_download.getMain_panel().isExit()) {
-                        HttpRequest request = HttpRequest.newBuilder(URI.create(MiscTools.upgradeMegaStorageUrlToHttps(chunk_url)))
-                                .timeout(Duration.ofMillis(readTimeoutMs))
-                                .header("User-Agent", MainPanel.DEFAULT_USER_AGENT)
-                                .POST(HttpRequest.BodyPublishers.noBody())
-                                .build();
+                        boolean allowFallback = (_current_smart_proxy == null && !MainPanel.isUse_proxy());
+                        try (HttpClientFactory.StreamResponse response = HttpClientFactory.sendChunkPost(
+                                client,
+                                allowFallback,
+                                MiscTools.upgradeMegaStorageUrlToHttps(chunk_url),
+                                readTimeoutMs)) {
+                            int http_status = response.statusCode();
 
-                        HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
-                        int http_status = response.statusCode();
-
-                        if (http_status == 200 && _current_smart_proxy == null && consumeForced509()) {
-                            http_status = 509;
-                            try (InputStream bodyToClose = response.body()) {
-                            }
-                        }
-
-                        if (http_status != 200) {
-                            http_error = http_status;
-                            try (InputStream errBody = response.body()) {
-                                if (errBody != null) {
-                                    errBody.readAllBytes();
-                                }
-                            } catch (IOException ignore) {
-                            }
-                            if ((http_status == 429 || http_status == 509) && _current_smart_proxy == null) {
-                                _download.recordThrottleSignal();
-                            }
-                            LOG.log(Level.INFO, "{0} Worker [{1}] chunk [{2}] HTTP {3}", new Object[]{Thread.currentThread().getName(), _id, chunk_id, http_status});
-                        } else {
-                            _chunk_inputstream = new ThrottledInputStream(response.body(), _download.getMain_panel().getStream_supervisor());
-
-                            Cipher decrypter = genDecrypter("AES", "AES/CTR/NoPadding", fileKey, forwardMEGALinkKeyIV(fileIv, chunk_offset));
-                            SubChunkMacAccumulator macAcc = new SubChunkMacAccumulator(chunk_id, Download.CHUNK_SIZE_MULTI, _download.getFile_size(), fileKey, fileIv);
-
-                            int reads;
-                            while (!_reset_current_chunk && !_exit && !_download.isStopped() && !_download.getMain_panel().isExit()
-                                    && chunk_reads < chunk_size
-                                    && (reads = _chunk_inputstream.read(buffer, 0, Math.min((int) (chunk_size - chunk_reads), buffer.length))) != -1) {
-
-                                int decLen = decrypter.update(buffer, 0, reads, plainBuffer, 0);
-                                if (decLen > 0) {
-                                    _download.writePartBytes(chunk_offset + chunk_reads, plainBuffer, decLen);
-                                    macAcc.update(plainBuffer, 0, decLen);
-                                }
-
-                                chunk_reads += reads;
-                                _download.getPartialProgress().add((long) reads);
-                                _download.getProgress_meter().secureNotify();
-
-                                if (!_reset_current_chunk && _download.isPaused() && !_exit && !_download.isStopped() && chunk_reads < chunk_size) {
-                                    _download.pause_worker();
-                                    secureWait();
-                                }
+                            if (http_status == 200 && _current_smart_proxy == null && consumeForced509()) {
+                                http_status = 509;
                             }
 
-                            if (chunk_reads == chunk_size && !_reset_current_chunk) {
-                                byte[] finalTail = decrypter.doFinal();
-                                if (finalTail != null && finalTail.length > 0) {
-                                    _download.writePartBytes(chunk_offset + chunk_reads - finalTail.length, finalTail, finalTail.length);
-                                    macAcc.update(finalTail, 0, finalTail.length);
-                                }
-                                Map<Long, byte[]> subMacs = macAcc.finish();
-                                if (stateStore != null) {
-                                    stateStore.markChunkCompleted(chunk_id, chunk_size, subMacs);
-                                }
-
-                                chunk_error = false;
-                                conta_error = 0;
-                                http_error = 0;
-                                _ip_at_first_509 = null;
-                                _last_http_error = 0;
-
-                                if (_current_smart_proxy != null && _download.get509BurstTimestamp() != -1) {
-                                    _download.reset509BurstTimestamp();
-                                    if (_download.isTurbo()) {
-                                        _download.disableTurboMode();
+                            if (http_status != 200) {
+                                http_error = http_status;
+                                if (response.body() != null) {
+                                    try {
+                                        response.body().readAllBytes();
+                                    } catch (IOException ignore) {
                                     }
                                 }
-                                _excluded_proxy_list.clear();
-                                _download.clearThrottleSignal();
+                                if ((http_status == 429 || http_status == 509) && _current_smart_proxy == null) {
+                                    _download.recordThrottleSignal();
+                                }
+                                LOG.log(Level.INFO, "{0} Worker [{1}] chunk [{2}] HTTP {3}", new Object[]{Thread.currentThread().getName(), _id, chunk_id, http_status});
+                            } else {
+                                _chunk_inputstream = new ThrottledInputStream(response.body(), _download.getMain_panel().getStream_supervisor());
+
+                                Cipher decrypter = genDecrypter("AES", "AES/CTR/NoPadding", fileKey, forwardMEGALinkKeyIV(fileIv, chunk_offset));
+                                SubChunkMacAccumulator macAcc = new SubChunkMacAccumulator(chunk_id, Download.CHUNK_SIZE_MULTI, _download.getFile_size(), fileKey, fileIv);
+
+                                int reads;
+                                while (!_reset_current_chunk && !_exit && !_download.isStopped() && !_download.getMain_panel().isExit()
+                                        && chunk_reads < chunk_size
+                                        && (reads = _chunk_inputstream.read(buffer, 0, Math.min((int) (chunk_size - chunk_reads), buffer.length))) != -1) {
+
+                                    int decLen = decrypter.update(buffer, 0, reads, plainBuffer, 0);
+                                    if (decLen > 0) {
+                                        _download.writePartBytes(chunk_offset + chunk_reads, plainBuffer, decLen);
+                                        macAcc.update(plainBuffer, 0, decLen);
+                                    }
+
+                                    chunk_reads += reads;
+                                    _download.getPartialProgress().add((long) reads);
+                                    _download.getProgress_meter().secureNotify();
+
+                                    if (!_reset_current_chunk && _download.isPaused() && !_exit && !_download.isStopped() && chunk_reads < chunk_size) {
+                                        _download.pause_worker();
+                                        secureWait();
+                                    }
+                                }
+
+                                if (chunk_reads == chunk_size && !_reset_current_chunk) {
+                                    byte[] finalTail = decrypter.doFinal();
+                                    if (finalTail != null && finalTail.length > 0) {
+                                        _download.writePartBytes(chunk_offset + chunk_reads - finalTail.length, finalTail, finalTail.length);
+                                        macAcc.update(finalTail, 0, finalTail.length);
+                                    }
+                                    Map<Long, byte[]> subMacs = macAcc.finish();
+                                    if (stateStore != null) {
+                                        stateStore.markChunkCompleted(chunk_id, chunk_size, subMacs);
+                                    }
+
+                                    chunk_error = false;
+                                    conta_error = 0;
+                                    http_error = 0;
+                                    _ip_at_first_509 = null;
+                                    _last_http_error = 0;
+
+                                    if (_current_smart_proxy != null && _download.get509BurstTimestamp() != -1) {
+                                        _download.reset509BurstTimestamp();
+                                        if (_download.isTurbo()) {
+                                            _download.disableTurboMode();
+                                        }
+                                    }
+                                    _excluded_proxy_list.clear();
+                                    _download.clearThrottleSignal();
+                                }
                             }
                         }
                     }
