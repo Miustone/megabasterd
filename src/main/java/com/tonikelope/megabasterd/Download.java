@@ -63,7 +63,7 @@ public class Download implements Transference, Runnable, SecureSingleThreadNotif
     public static final boolean DEFAULT_CLIPBOARD_LINK_MONITOR = true;
     public static final int CHUNK_SIZE_MULTI = 20;
     private static final Logger LOG = Logger.getLogger(Download.class.getName());
-    private static final Semaphore INTEGRITY_CHECK_PERMIT = new Semaphore(1, true);
+    private static final Semaphore INTEGRITY_CHECK_PERMIT = new Semaphore(2, true);
 
     private final MainPanel _main_panel;
     private volatile DownloadView _view;
@@ -110,6 +110,7 @@ public class Download implements Transference, Runnable, SecureSingleThreadNotif
     private volatile byte[] _byte_file_iv;
     private final java.util.concurrent.atomic.AtomicInteger _throttle_events = new java.util.concurrent.atomic.AtomicInteger(0);
     private volatile String _last_download_url;
+    private volatile long _last_download_url_ts = 0L;
     private volatile boolean _provision_ok;
     private boolean _auto_retry_on_error;
     /**
@@ -310,6 +311,7 @@ public class Download implements Transference, Runnable, SecureSingleThreadNotif
         synchronized (_dl_url_lock) {
             if (java.util.Objects.equals(_last_download_url, staleUrl)) {
                 _last_download_url = null;
+                _last_download_url_ts = 0L;
             }
         }
     }
@@ -848,6 +850,7 @@ public class Download implements Transference, Runnable, SecureSingleThreadNotif
                             getView().printStatusNormal("Starting download (retrieving MEGA temp link), please wait...");
 
                             _last_download_url = getMegaFileDownloadUrl(_url);
+                            _last_download_url_ts = System.currentTimeMillis();
                         }
 
                         if (!_exit && _progress < _file_size) {
@@ -865,7 +868,11 @@ public class Download implements Transference, Runnable, SecureSingleThreadNotif
 
                                 if (_use_slots) {
 
-                                    _slots = getMain_panel().getDefault_slots_down();
+                                    int configuredSlots = Math.max(1, getMain_panel().getDefault_slots_down());
+                                    int remainingChunks = _state_store != null
+                                            ? countRemainingChunks(_state_store, _file_size, CHUNK_SIZE_MULTI, configuredSlots)
+                                            : configuredSlots;
+                                    _slots = Math.max(1, Math.min(configuredSlots, remainingChunks));
 
                                     final int initial_slots = _slots;
                                     MiscTools.GUIRun(() -> _view.getSlots_spinner().setValue(initial_slots));
@@ -1018,7 +1025,7 @@ public class Download implements Transference, Runnable, SecureSingleThreadNotif
                             getMain_panel().getGlobal_dl_speed().detachTransference(this);
                         }
 
-                        if (_state_store != null) {
+                        if (_state_store != null && _progress < _file_size) {
                             _state_store.persistNow();
                         }
                         if (_part_channel != null) {
@@ -1075,41 +1082,59 @@ public class Download implements Transference, Runnable, SecureSingleThreadNotif
                                     getView().getStop_button().setText(LabelTranslatorSingleton.getInstance().translate("CANCEL CHECK"));
                                 });
 
-                                boolean verify_permit_acquired = acquireIntegrityCheckPermit();
+                                Boolean fastMac = _state_store != null
+                                        ? CryptTools.verifyMetaMacFromStore(_state_store, _file_key, _file_size)
+                                        : null;
+                                if (fastMac != null) {
+                                    if (fastMac) {
+                                        getView().printStatusOK("File successfully downloaded! (Integrity check PASSED)");
+                                    } else if (!_exit) {
+                                        _status_error = "BAD NEWS :( File is DAMAGED! (deleted)";
 
-                                try {
-                                    if (!verify_permit_acquired) {
-                                        getView().printStatusOK("File successfully downloaded! (but integrity check CANCELED)");
-                                    } else {
-                                        getView().printStatusNormal("Checking file integrity, please wait...");
-
-                                        Boolean fastMac = _state_store != null
-                                                ? CryptTools.verifyMetaMacFromStore(_state_store, _file_key, _file_size)
-                                                : null;
-                                        boolean verified = (fastMac != null) ? fastMac : verifyFileCBCMAC(filename);
-
-                                        if (verified) {
-                                            getView().printStatusOK("File successfully downloaded! (Integrity check PASSED)");
-                                        } else if (!_exit) {
-                                            _status_error = "BAD NEWS :( File is DAMAGED! (deleted)";
-
-                                            try {
-                                                java.nio.file.Files.deleteIfExists(java.nio.file.Paths.get(filename));
-                                            } catch (IOException del_ex) {
-                                                LOG.log(Level.SEVERE, "Failed to delete corrupted file {0}: {1}", new Object[]{filename, del_ex.getMessage()});
-                                            }
-
-                                            getView().printStatusError(_status_error);
-                                        } else {
-                                            getView().printStatusOK("File successfully downloaded! (but integrity check CANCELED)");
+                                        try {
+                                            java.nio.file.Files.deleteIfExists(java.nio.file.Paths.get(filename));
+                                        } catch (IOException del_ex) {
+                                            LOG.log(Level.SEVERE, "Failed to delete corrupted file {0}: {1}", new Object[]{filename, del_ex.getMessage()});
                                         }
-                                    }
-                                } finally {
-                                    if (verify_permit_acquired) {
-                                        INTEGRITY_CHECK_PERMIT.release();
-                                    }
 
-                                    MiscTools.GUIRun(() -> getView().getStop_button().setVisible(false));
+                                        getView().printStatusError(_status_error);
+                                    } else {
+                                        getView().printStatusOK("File successfully downloaded! (but integrity check CANCELED)");
+                                    }
+                                } else {
+                                    boolean verify_permit_acquired = acquireIntegrityCheckPermit();
+
+                                    try {
+                                        if (!verify_permit_acquired) {
+                                            getView().printStatusOK("File successfully downloaded! (but integrity check CANCELED)");
+                                        } else {
+                                            getView().printStatusNormal("Checking file integrity, please wait...");
+
+                                            boolean verified = verifyFileCBCMAC(filename);
+
+                                            if (verified) {
+                                                getView().printStatusOK("File successfully downloaded! (Integrity check PASSED)");
+                                            } else if (!_exit) {
+                                                _status_error = "BAD NEWS :( File is DAMAGED! (deleted)";
+
+                                                try {
+                                                    java.nio.file.Files.deleteIfExists(java.nio.file.Paths.get(filename));
+                                                } catch (IOException del_ex) {
+                                                    LOG.log(Level.SEVERE, "Failed to delete corrupted file {0}: {1}", new Object[]{filename, del_ex.getMessage()});
+                                                }
+
+                                                getView().printStatusError(_status_error);
+                                            } else {
+                                                getView().printStatusOK("File successfully downloaded! (but integrity check CANCELED)");
+                                            }
+                                        }
+                                    } finally {
+                                        if (verify_permit_acquired) {
+                                            INTEGRITY_CHECK_PERMIT.release();
+                                        }
+
+                                        MiscTools.GUIRun(() -> getView().getStop_button().setVisible(false));
+                                    }
                                 }
 
                             } else {
@@ -1563,9 +1588,15 @@ public class Download implements Transference, Runnable, SecureSingleThreadNotif
 
         synchronized (_dl_url_lock) {
 
-            if (_last_download_url != null && checkMegaDownloadUrl(_last_download_url)) {
-
-                return _last_download_url;
+            if (_last_download_url != null) {
+                long ageMs = System.currentTimeMillis() - _last_download_url_ts;
+                if (ageMs >= 0 && ageMs < 120_000L) {
+                    return _last_download_url;
+                }
+                if (checkMegaDownloadUrl(_last_download_url)) {
+                    _last_download_url_ts = System.currentTimeMillis();
+                    return _last_download_url;
+                }
             }
 
             // Cap the worker-url refetch loop. Without this, a permanently
@@ -1603,6 +1634,7 @@ public class Download implements Transference, Runnable, SecureSingleThreadNotif
                     if (download_url != null && !download_url.isBlank()) {
 
                         _last_download_url = download_url;
+                        _last_download_url_ts = System.currentTimeMillis();
 
                     } else {
 
@@ -1632,6 +1664,22 @@ public class Download implements Transference, Runnable, SecureSingleThreadNotif
             return _last_download_url;
 
         }
+    }
+
+    private static int countRemainingChunks(DownloadStateStore store, long fileSize, int chunkMulti, int cap) {
+        int remaining = 0;
+        long cid = 1L;
+        while (remaining < cap) {
+            long offset = ChunkWriterManager.calculateChunkOffset(cid, chunkMulti);
+            if (offset >= fileSize) {
+                break;
+            }
+            if (!store.isChunkCompleted(cid)) {
+                remaining++;
+            }
+            cid++;
+        }
+        return remaining;
     }
 
     private boolean areChunkWorkersFinished() {

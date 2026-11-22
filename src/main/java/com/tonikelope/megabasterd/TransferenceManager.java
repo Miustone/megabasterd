@@ -929,8 +929,14 @@ abstract public class TransferenceManager implements Runnable, SecureSingleThrea
 
                     executor.shutdown();
 
-                    while (!executor.isTerminated()) {
-                        MiscTools.pausar(1000);
+                    try {
+                        while (!executor.awaitTermination(500, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                            if (_main_panel.isExit()) {
+                                break;
+                            }
+                        }
+                    } catch (InterruptedException ex) {
+                        Thread.currentThread().interrupt();
                     }
 
                     synchronized (_transference_queue_sort_lock) {

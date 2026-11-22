@@ -232,23 +232,23 @@ public final class SystemBenchmark {
         int ulSlots;
         int bufSize;
 
-        // Safe MEGA-friendly upper bounds: never exceed 5 concurrent DLs or 10 slots/file
+        // Safe MEGA-friendly upper bounds: never exceed 6 concurrent DLs or 10 slots/file
         // so high-end machines saturate bandwidth cleanly without triggering host WAF/509 floods.
         if (score >= 9 && (estMbps < 0 || estMbps >= 150)) {
             tier = HardwareTier.HIGH_END;
-            concurrentDl = 4;
+            concurrentDl = 6;
             dlSlots = 10;
             ulSlots = 8;
             bufSize = 256 * 1024;
         } else if (score >= 6) {
             tier = HardwareTier.PERFORMANCE;
-            concurrentDl = 4;
+            concurrentDl = 5;
             dlSlots = 8;
             ulSlots = 6;
             bufSize = 128 * 1024;
         } else if (score >= 3) {
             tier = HardwareTier.BALANCED;
-            concurrentDl = 3;
+            concurrentDl = 4;
             dlSlots = 6;
             ulSlots = 4;
             bufSize = 64 * 1024;

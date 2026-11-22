@@ -25,7 +25,7 @@ class SystemBenchmarkAndResetTest {
 
         // Host protection caps
         assertTrue(highEnd.getRecommendedDownloadSlots() <= 10);
-        assertTrue(highEnd.getRecommendedConcurrentDownloads() <= 5);
+        assertTrue(highEnd.getRecommendedConcurrentDownloads() <= 6);
     }
 
     @Test
