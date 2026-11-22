@@ -987,7 +987,9 @@ public class Download implements Transference, Runnable, SecureSingleThreadNotif
 
                             });
 
-                            secureWait();
+                            while (!areChunkWorkersFinished() && !isExit() && !_main_panel.isExit()) {
+                                secureWait();
+                            }
 
                             LOG.log(Level.INFO, "{0} Chunkdownloaders finished!", Thread.currentThread().getName());
 
@@ -1003,6 +1005,14 @@ public class Download implements Transference, Runnable, SecureSingleThreadNotif
 
                             if (!_thread_pool.isTerminated()) {
                                 _thread_pool.shutdownNow();
+                            }
+
+                            // Drain any remaining partial progress updates in case ProgressMeter was still finishing
+                            Long leftoverRead;
+                            long currentProg = getProgress();
+                            while ((leftoverRead = _partialProgressQueue.poll()) != null) {
+                                currentProg += leftoverRead;
+                                setProgress(currentProg);
                             }
 
                             getMain_panel().getGlobal_dl_speed().detachTransference(this);
@@ -1590,7 +1600,7 @@ public class Download implements Transference, Runnable, SecureSingleThreadNotif
                         download_url = MegaCrypterAPI.getMegaFileDownloadUrl(_url, _file_pass, _file_noexpire, _ma.getSid(), getMain_panel().getMega_proxy_server() != null ? (getMain_panel().getMega_proxy_server().getPort() + ":" + Bin2BASE64(("megacrypter:" + getMain_panel().getMega_proxy_server().getPassword()).getBytes("UTF-8")) + ":" + MiscTools.getMyPublicIP()) : null);
                     }
 
-                    if (checkMegaDownloadUrl(download_url)) {
+                    if (download_url != null && !download_url.isBlank()) {
 
                         _last_download_url = download_url;
 
@@ -1621,6 +1631,12 @@ public class Download implements Transference, Runnable, SecureSingleThreadNotif
 
             return _last_download_url;
 
+        }
+    }
+
+    private boolean areChunkWorkersFinished() {
+        synchronized (_workers_lock) {
+            return _chunkworkers.isEmpty();
         }
     }
 

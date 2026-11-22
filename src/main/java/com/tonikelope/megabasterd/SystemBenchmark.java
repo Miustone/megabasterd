@@ -295,9 +295,13 @@ public final class SystemBenchmark {
             byte[] key = new byte[16];
             byte[] iv = new byte[16];
             new SecureRandom().nextBytes(key);
-            byte[] in = new byte[2 * 1024 * 1024];
+            byte[] warmup = new byte[256 * 1024];
+            byte[] warmupOut = new byte[warmup.length];
+            byte[] in = new byte[4 * 1024 * 1024];
             byte[] out = new byte[in.length];
             Cipher cipher = Cipher.getInstance("AES/CTR/NoPadding");
+            cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(key, "AES"), new IvParameterSpec(iv));
+            cipher.update(warmup, 0, warmup.length, warmupOut, 0);
             cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(key, "AES"), new IvParameterSpec(iv));
             long t0 = System.nanoTime();
             cipher.update(in, 0, in.length, out, 0);
@@ -342,41 +346,56 @@ public final class SystemBenchmark {
     }
 
     /**
-     * Tiny 256 KB timed burst probe (zero MEGA quota impact).
-     * Returns {estimatedMbps, latencyMs} or {-1, -1} on failure/offline.
+     * Warm-connection 1 MB timed burst probe (zero MEGA quota impact).
+     * Separates cold TLS handshake latency from actual throughput so broadband
+     * connections are not misclassified as slow due to handshake overhead.
      */
     private static double[] probeNetworkSpeed() {
-        String[] urls = {
-            "https://speed.cloudflare.com/__down?bytes=262144",
-            "https://g.api.mega.co.nz/"
-        };
         HttpClient client = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofMillis(2500))
                 .followRedirects(HttpClient.Redirect.NORMAL)
                 .build();
 
-        for (String u : urls) {
-            try {
+        try {
+            long tLatency = System.nanoTime();
+            HttpRequest warmupReq = HttpRequest.newBuilder(URI.create("https://speed.cloudflare.com/__down?bytes=1"))
+                    .timeout(Duration.ofMillis(2500))
+                    .header("User-Agent", MainPanel.DEFAULT_USER_AGENT)
+                    .GET()
+                    .build();
+            HttpResponse<byte[]> warmupResp = client.send(warmupReq, HttpResponse.BodyHandlers.ofByteArray());
+            long latencyMs = Math.max(1L, (System.nanoTime() - tLatency) / 1_000_000L);
+            if (warmupResp.statusCode() >= 200 && warmupResp.statusCode() < 400) {
                 long t0 = System.nanoTime();
-                HttpRequest req = HttpRequest.newBuilder(URI.create(u))
-                        .timeout(Duration.ofMillis(3000))
+                HttpRequest req = HttpRequest.newBuilder(URI.create("https://speed.cloudflare.com/__down?bytes=1048576"))
+                        .timeout(Duration.ofMillis(4000))
                         .header("User-Agent", MainPanel.DEFAULT_USER_AGENT)
                         .GET()
                         .build();
                 HttpResponse<byte[]> resp = client.send(req, HttpResponse.BodyHandlers.ofByteArray());
                 long dtNs = Math.max(1L, System.nanoTime() - t0);
-                long latencyMs = Math.max(1L, dtNs / 1_000_000L);
                 int bytes = resp.body() != null ? resp.body().length : 0;
-                if (resp.statusCode() >= 200 && resp.statusCode() < 400 && bytes >= 64 * 1024) {
+                if (resp.statusCode() >= 200 && resp.statusCode() < 400 && bytes >= 256 * 1024) {
                     double mbps = (bytes * 8.0 / 1_000_000.0) / (dtNs / 1_000_000_000.0);
                     return new double[]{mbps, latencyMs};
                 }
-                if (resp.statusCode() > 0) {
-                    // Latency-only fallback if payload was small.
-                    return new double[]{latencyMs < 60 ? 100.0 : 40.0, latencyMs};
-                }
-            } catch (Exception ignore) {
             }
+        } catch (Exception ignore) {
+        }
+
+        try {
+            long t0 = System.nanoTime();
+            HttpRequest req = HttpRequest.newBuilder(URI.create("https://g.api.mega.co.nz/"))
+                    .timeout(Duration.ofMillis(3000))
+                    .header("User-Agent", MainPanel.DEFAULT_USER_AGENT)
+                    .GET()
+                    .build();
+            HttpResponse<byte[]> resp = client.send(req, HttpResponse.BodyHandlers.ofByteArray());
+            long latencyMs = Math.max(1L, (System.nanoTime() - t0) / 1_000_000L);
+            if (resp.statusCode() > 0) {
+                return new double[]{latencyMs < 60 ? 100.0 : 40.0, latencyMs};
+            }
+        } catch (Exception ignore) {
         }
         return new double[]{-1.0, -1.0};
     }
