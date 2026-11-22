@@ -3,12 +3,16 @@ package com.tonikelope.megabasterd;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.Authenticator;
+import java.net.ConnectException;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.NoRouteToHostException;
 import java.net.PasswordAuthentication;
 import java.net.ProxySelector;
 import java.net.Socket;
+import java.net.SocketAddress;
+import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.net.URL;
 import java.net.http.HttpClient;
@@ -34,7 +38,7 @@ public final class HttpClientFactory {
 
     private static final Logger LOG = Logger.getLogger(HttpClientFactory.class.getName());
     private static final int MAX_CACHED_PROXY_CLIENTS = 32;
-    private static final Duration DIRECT_CONNECT_TIMEOUT = Duration.ofMillis(2500);
+    private static final Duration DIRECT_CONNECT_TIMEOUT = Duration.ofMillis(1500);
     private static final long IPV6_BLACKLIST_TTL_MS = 10 * 60_000L;
     private static final ConcurrentHashMap<String, Long> IPV6_BLACKLIST_EXPIRY = new ConcurrentHashMap<>();
 
@@ -167,6 +171,17 @@ public final class HttpClientFactory {
         }
     }
 
+    public static boolean isUrlHostIpv6Blacklisted(String url) {
+        if (url == null || url.isBlank()) {
+            return false;
+        }
+        try {
+            return isHostIpv6Blacklisted(URI.create(url).getHost());
+        } catch (IllegalArgumentException ignore) {
+            return false;
+        }
+    }
+
     public static boolean isHostIpv6Blacklisted(String host) {
         if (host == null) {
             return false;
@@ -211,13 +226,32 @@ public final class HttpClientFactory {
         try {
             HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
             return new StreamResponse(response.statusCode(), response.body(), null);
-        } catch (HttpConnectTimeoutException tex) {
-            if (allowDualStackFallback && host != null && hasIpv4Address(host)) {
+        } catch (IOException ex) {
+            if (allowDualStackFallback && isConnectFailure(ex) && host != null && hasIpv4Address(host)) {
                 markHostIpv6Blacklisted(host);
                 return sendPostViaIpv4(uri, readTimeoutMs);
             }
-            throw tex;
+            throw ex;
         }
+    }
+
+    static SSLSocketFactory ipv4SocketFactory() {
+        return IPV4_SSL_SOCKET_FACTORY;
+    }
+
+    private static boolean isConnectFailure(Throwable t) {
+        for (Throwable cur = t; cur != null; cur = cur.getCause()) {
+            if (cur instanceof HttpConnectTimeoutException
+                    || cur instanceof ConnectException
+                    || cur instanceof NoRouteToHostException) {
+                return true;
+            }
+            if (cur instanceof SocketTimeoutException && cur.getMessage() != null
+                    && cur.getMessage().toLowerCase().contains("connect")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean hasIpv4Address(String host) {
@@ -246,7 +280,8 @@ public final class HttpClientFactory {
 
         int status = con.getResponseCode();
         InputStream stream = status >= 400 ? con.getErrorStream() : con.getInputStream();
-        return new StreamResponse(status, stream, con::disconnect);
+        // Omit con.disconnect() so completed transfers return the TLS socket to KeepAliveCache.
+        return new StreamResponse(status, stream, null);
     }
 
     private static final SSLSocketFactory IPV4_SSL_SOCKET_FACTORY = new SSLSocketFactory() {
@@ -265,6 +300,26 @@ public final class HttpClientFactory {
             Socket raw = new Socket();
             raw.connect(new InetSocketAddress(resolveIpv4(host), port), 4000);
             return delegate.createSocket(raw, host, port, true);
+        }
+
+        /**
+         * HttpsURLConnection (via sun.net.NetworkClient.doConnect) calls the zero-arg
+         * createSocket() and then connects the socket itself; overriding connect() here
+         * ensures the hostname resolves to its IPv4 A record before TLS layering.
+         */
+        @Override
+        public Socket createSocket() throws IOException {
+            return new Socket() {
+                @Override
+                public void connect(SocketAddress endpoint, int timeout) throws IOException {
+                    if (endpoint instanceof InetSocketAddress isa && isa.getHostString() != null) {
+                        InetSocketAddress v4Endpoint = new InetSocketAddress(resolveIpv4(isa.getHostString()), isa.getPort());
+                        super.connect(v4Endpoint, timeout);
+                    } else {
+                        super.connect(endpoint, timeout);
+                    }
+                }
+            };
         }
 
         @Override

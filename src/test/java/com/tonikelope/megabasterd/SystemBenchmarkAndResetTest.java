@@ -132,10 +132,18 @@ class SystemBenchmarkAndResetTest {
     }
 
     @Test
-    void ipv6BlacklistTracksUnreachableHosts() {
+    void ipv6BlacklistTracksUnreachableHosts() throws Exception {
         String host = "dead-ipv6-test-node.invalid";
         assertFalse(HttpClientFactory.isHostIpv6Blacklisted(host));
         HttpClientFactory.markHostIpv6Blacklisted(host);
         assertTrue(HttpClientFactory.isHostIpv6Blacklisted(host));
+
+        try (java.net.ServerSocket ss = new java.net.ServerSocket(0, 1, java.net.InetAddress.getByName("127.0.0.1"));
+                java.net.Socket client = HttpClientFactory.ipv4SocketFactory().createSocket()) {
+            client.connect(new java.net.InetSocketAddress("localhost", ss.getLocalPort()), 1000);
+            try (java.net.Socket accepted = ss.accept()) {
+                assertInstanceOf(java.net.Inet4Address.class, client.getInetAddress());
+            }
+        }
     }
 }

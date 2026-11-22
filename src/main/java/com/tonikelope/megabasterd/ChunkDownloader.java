@@ -13,12 +13,9 @@ import static com.tonikelope.megabasterd.CryptTools.*;
 import static com.tonikelope.megabasterd.MainPanel.*;
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.URI;
+import java.net.SocketTimeoutException;
 import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Map;
 import java.util.logging.Level;
@@ -478,6 +475,10 @@ public class ChunkDownloader implements Runnable, SecureSingleThreadNotifiable {
                     timeout = true;
                     connectTimeout = (tex instanceof java.net.http.HttpConnectTimeoutException);
                     LOG.log(Level.WARNING, "{0} Worker [{1}] TIMEOUT chunk [{2}]: {3}", new Object[]{Thread.currentThread().getName(), _id, chunk_id, tex.getMessage()});
+                } catch (SocketTimeoutException stex) {
+                    timeout = true;
+                    connectTimeout = stex.getMessage() != null && stex.getMessage().toLowerCase().contains("connect");
+                    LOG.log(Level.WARNING, "{0} Worker [{1}] SOCKET TIMEOUT chunk [{2}]: {3}", new Object[]{Thread.currentThread().getName(), _id, chunk_id, stex.getMessage()});
                 } catch (InterruptedException iex) {
                     Thread.currentThread().interrupt();
                 } catch (Exception ex) {
@@ -502,19 +503,27 @@ public class ChunkDownloader implements Runnable, SecureSingleThreadNotifiable {
                         }
 
                         conta_error++;
-                        if ((connectTimeout || (http_error == 0 && conta_error >= 2)) && worker_url != null) {
+                        boolean fallback509 = (http_error == 509
+                                && HttpClientFactory.isUrlHostIpv6Blacklisted(worker_url));
+                        if (shouldInvalidateUrlOnError(worker_url, http_error, conta_error, connectTimeout, fallback509)) {
                             _download.invalidateDownloadUrl(worker_url);
                             worker_url = null;
                         }
 
+                        boolean fastRotate = (fallback509 && conta_error <= 3);
                         if (!_exit && !_download.isStopped() && !_download.getMain_panel().isExit()
-                                && !timeout && _current_smart_proxy == null && http_error != 403) {
-                            // First transient socket drop (http_error == 0, e.g. closed keep-alive)
-                            // retries immediately without a 2s backoff stall.
-                            if (http_error != 0 || conta_error >= 2) {
+                                && !timeout && !fastRotate && _current_smart_proxy == null && http_error != 403) {
+                            // First transient socket drop / mirror rotation retries immediately without a 2s stall.
+                            if (http_error != 0 || conta_error >= 3) {
                                 boolean ip_changed = sleepWithIpAwareBackoff(conta_error, http_error);
                                 if (ip_changed) {
                                     conta_error = 0;
+                                }
+                            } else if (conta_error == 2) {
+                                try {
+                                    Thread.sleep(500);
+                                } catch (InterruptedException ex) {
+                                    Thread.currentThread().interrupt();
                                 }
                             }
                         } else if (http_error == 503 && _current_smart_proxy == null && !_download.isTurbo()) {
@@ -540,5 +549,14 @@ public class ChunkDownloader implements Runnable, SecureSingleThreadNotifiable {
         _download.stopThisSlot(this);
         _download.secureNotify();
         LOG.log(Level.INFO, "{0} ChunkDownloader [{1}] {2}: bye bye", new Object[]{Thread.currentThread().getName(), _id, _download.getFile_name()});
+    }
+
+    /**
+     * Decides whether the current storage URL should be invalidated so the next
+     * attempt requests a fresh CDN mirror (e.g. off a resetting/timeout/509 IPv4-fallback host).
+     */
+    protected static boolean shouldInvalidateUrlOnError(
+            String workerUrl, int httpError, int contaError, boolean connectTimeout, boolean rotateOnFallback509) {
+        return workerUrl != null && (connectTimeout || (httpError == 0 && contaError >= 1) || rotateOnFallback509);
     }
 }

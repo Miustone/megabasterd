@@ -13,12 +13,9 @@ import static com.tonikelope.megabasterd.CryptTools.forwardMEGALinkKeyIV;
 import static com.tonikelope.megabasterd.CryptTools.genDecrypter;
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.URI;
+import java.net.SocketTimeoutException;
 import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Map;
 import java.util.logging.Level;
@@ -179,6 +176,10 @@ public class ChunkDownloaderMono extends ChunkDownloader {
                                 } catch (IOException ignore) {
                                 }
                             }
+                            if ((http_status == 429 || http_status == 509) && current_smart_proxy == null) {
+                                getDownload().recordThrottleSignal();
+                            }
+                            LOG.log(Level.INFO, "{0} Mono chunk [{1}] HTTP {2}", new Object[]{Thread.currentThread().getName(), chunk_id, http_status});
                         } else {
                             try (InputStream is = new ThrottledInputStream(response.body(), getDownload().getMain_panel().getStream_supervisor())) {
                                 int reads;
@@ -219,6 +220,9 @@ public class ChunkDownloaderMono extends ChunkDownloader {
                 } catch (HttpTimeoutException tex) {
                     timeout = true;
                     connectTimeout = (tex instanceof java.net.http.HttpConnectTimeoutException);
+                } catch (SocketTimeoutException stex) {
+                    timeout = true;
+                    connectTimeout = stex.getMessage() != null && stex.getMessage().toLowerCase().contains("connect");
                 } catch (InterruptedException iex) {
                     Thread.currentThread().interrupt();
                 } catch (Exception ex) {
@@ -233,15 +237,25 @@ public class ChunkDownloaderMono extends ChunkDownloader {
                             getDownload().getProgress_meter().secureNotify();
                         }
                         conta_error++;
-                        if ((connectTimeout || (http_error == 0 && conta_error >= 2)) && worker_url != null) {
+                        boolean fallback509 = (http_error == 509
+                                && HttpClientFactory.isUrlHostIpv6Blacklisted(worker_url));
+                        if (shouldInvalidateUrlOnError(worker_url, http_error, conta_error, connectTimeout, fallback509)) {
                             getDownload().invalidateDownloadUrl(worker_url);
                             worker_url = null;
                         }
-                        if (!isExit() && !getDownload().isStopped() && !getDownload().getMain_panel().isExit() && !timeout && http_error != 403) {
-                            if (http_error != 0 || conta_error >= 2) {
+                        boolean fastRotate = (fallback509 && conta_error <= 3);
+                        if (!isExit() && !getDownload().isStopped() && !getDownload().getMain_panel().isExit()
+                                && !timeout && !fastRotate && http_error != 403) {
+                            if (http_error != 0 || conta_error >= 3) {
                                 boolean ip_changed = sleepWithIpAwareBackoff(conta_error, http_error);
                                 if (ip_changed) {
                                     conta_error = 0;
+                                }
+                            } else if (conta_error == 2) {
+                                try {
+                                    Thread.sleep(500);
+                                } catch (InterruptedException ex) {
+                                    Thread.currentThread().interrupt();
                                 }
                             }
                         }
