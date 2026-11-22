@@ -159,6 +159,7 @@ public class ChunkDownloaderMono extends ChunkDownloader {
                 long chunk_reads = 0;
                 chunk_error = true;
                 timeout = false;
+                boolean connectTimeout = false;
                 http_error = 0;
 
                 try {
@@ -217,6 +218,7 @@ public class ChunkDownloaderMono extends ChunkDownloader {
                     }
                 } catch (HttpTimeoutException tex) {
                     timeout = true;
+                    connectTimeout = (tex instanceof java.net.http.HttpConnectTimeoutException);
                 } catch (InterruptedException iex) {
                     Thread.currentThread().interrupt();
                 } catch (Exception ex) {
@@ -231,6 +233,10 @@ public class ChunkDownloaderMono extends ChunkDownloader {
                             getDownload().getProgress_meter().secureNotify();
                         }
                         conta_error++;
+                        if ((connectTimeout || (http_error == 0 && conta_error >= 2)) && worker_url != null) {
+                            getDownload().invalidateDownloadUrl(worker_url);
+                            worker_url = null;
+                        }
                         if (!isExit() && !getDownload().isStopped() && !getDownload().getMain_panel().isExit() && !timeout && http_error != 403) {
                             if (http_error != 0 || conta_error >= 2) {
                                 boolean ip_changed = sleepWithIpAwareBackoff(conta_error, http_error);

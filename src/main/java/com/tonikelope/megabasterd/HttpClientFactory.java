@@ -17,7 +17,7 @@ import java.util.Map;
 public final class HttpClientFactory {
 
     private static final int MAX_CACHED_PROXY_CLIENTS = 32;
-    private static final Duration DIRECT_CONNECT_TIMEOUT = Duration.ofSeconds(6);
+    private static final Duration DIRECT_CONNECT_TIMEOUT = Duration.ofMillis(2500);
 
     private static final HttpClient DIRECT_CLIENT = HttpClient.newBuilder()
             .version(HttpClient.Version.HTTP_1_1)

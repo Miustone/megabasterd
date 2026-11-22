@@ -389,6 +389,7 @@ public class ChunkDownloader implements Runnable, SecureSingleThreadNotifiable {
                 long chunk_reads = 0;
                 chunk_error = true;
                 timeout = false;
+                boolean connectTimeout = false;
                 http_error = 0;
 
                 try {
@@ -477,6 +478,7 @@ public class ChunkDownloader implements Runnable, SecureSingleThreadNotifiable {
                     }
                 } catch (HttpTimeoutException tex) {
                     timeout = true;
+                    connectTimeout = (tex instanceof java.net.http.HttpConnectTimeoutException);
                     LOG.log(Level.WARNING, "{0} Worker [{1}] TIMEOUT chunk [{2}]: {3}", new Object[]{Thread.currentThread().getName(), _id, chunk_id, tex.getMessage()});
                 } catch (InterruptedException iex) {
                     Thread.currentThread().interrupt();
@@ -502,7 +504,7 @@ public class ChunkDownloader implements Runnable, SecureSingleThreadNotifiable {
                         }
 
                         conta_error++;
-                        if (http_error == 0 && conta_error >= 2 && worker_url != null) {
+                        if ((connectTimeout || (http_error == 0 && conta_error >= 2)) && worker_url != null) {
                             _download.invalidateDownloadUrl(worker_url);
                             worker_url = null;
                         }
