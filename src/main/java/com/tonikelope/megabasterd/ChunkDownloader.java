@@ -320,7 +320,7 @@ public class ChunkDownloader implements Runnable, SecureSingleThreadNotifiable {
                 }
 
                 HttpClient client = HttpClientFactory.direct();
-                long readTimeoutMs = Transference.HTTP_READ_TIMEOUT;
+                long readTimeoutMs = 15_000L;
 
                 long dl_509_ts_check = _download.get509BurstTimestamp();
                 if (MainPanel.isUse_smart_proxy() && proxy_manager != null
@@ -477,11 +477,14 @@ public class ChunkDownloader implements Runnable, SecureSingleThreadNotifiable {
                     }
                 } catch (HttpTimeoutException tex) {
                     timeout = true;
-                    LOG.log(Level.WARNING, "{0} Worker [{1}] TIMEOUT chunk [{2}]", new Object[]{Thread.currentThread().getName(), _id, chunk_id});
+                    LOG.log(Level.WARNING, "{0} Worker [{1}] TIMEOUT chunk [{2}]: {3}", new Object[]{Thread.currentThread().getName(), _id, chunk_id, tex.getMessage()});
                 } catch (InterruptedException iex) {
                     Thread.currentThread().interrupt();
                 } catch (Exception ex) {
-                    LOG.log(Level.WARNING, "{0} Worker [{1}] chunk [{2}] error: {3}", new Object[]{Thread.currentThread().getName(), _id, chunk_id, ex.getMessage()});
+                    String errDetail = ex.getClass().getSimpleName()
+                            + (ex.getMessage() != null ? ": " + ex.getMessage() : "")
+                            + (ex.getCause() != null ? " (cause: " + ex.getCause().getClass().getSimpleName() + ": " + ex.getCause().getMessage() + ")" : "");
+                    LOG.log(Level.WARNING, "{0} Worker [{1}] chunk [{2}] error: {3}", new Object[]{Thread.currentThread().getName(), _id, chunk_id, errDetail});
                 } finally {
                     if (_chunk_inputstream != null) {
                         try {
@@ -498,11 +501,21 @@ public class ChunkDownloader implements Runnable, SecureSingleThreadNotifiable {
                             _download.getProgress_meter().secureNotify();
                         }
 
+                        conta_error++;
+                        if (http_error == 0 && conta_error >= 2 && worker_url != null) {
+                            _download.invalidateDownloadUrl(worker_url);
+                            worker_url = null;
+                        }
+
                         if (!_exit && !_download.isStopped() && !_download.getMain_panel().isExit()
                                 && !timeout && _current_smart_proxy == null && http_error != 403) {
-                            boolean ip_changed = sleepWithIpAwareBackoff(++conta_error, http_error);
-                            if (ip_changed) {
-                                conta_error = 0;
+                            // First transient socket drop (http_error == 0, e.g. closed keep-alive)
+                            // retries immediately without a 2s backoff stall.
+                            if (http_error != 0 || conta_error >= 2) {
+                                boolean ip_changed = sleepWithIpAwareBackoff(conta_error, http_error);
+                                if (ip_changed) {
+                                    conta_error = 0;
+                                }
                             }
                         } else if (http_error == 503 && _current_smart_proxy == null && !_download.isTurbo()) {
                             setExit(true);

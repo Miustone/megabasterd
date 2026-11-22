@@ -68,7 +68,7 @@ if not exist "%JAR_PATH%" (
     exit /b 1
 )
 
-start "" "%JAVAW_EXE%" --enable-native-access=ALL-UNNAMED -Djava.net.preferIPv6Addresses=system -jar "%JAR_PATH%" %*
+start "" "%JAVAW_EXE%" --enable-native-access=ALL-UNNAMED -Djava.net.preferIPv6Addresses=system -Djdk.httpclient.keepalive.timeout=10 -jar "%JAR_PATH%" %*
 exit /b 0
 
 :check_java_25

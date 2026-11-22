@@ -220,7 +220,9 @@ public class ChunkDownloaderMono extends ChunkDownloader {
                 } catch (InterruptedException iex) {
                     Thread.currentThread().interrupt();
                 } catch (Exception ex) {
-                    LOG.log(Level.WARNING, "{0} Mono chunk [{1}] error: {2}", new Object[]{Thread.currentThread().getName(), chunk_id, ex.getMessage()});
+                    String errDetail = ex.getClass().getSimpleName()
+                            + (ex.getMessage() != null ? ": " + ex.getMessage() : "");
+                    LOG.log(Level.WARNING, "{0} Mono chunk [{1}] error: {2}", new Object[]{Thread.currentThread().getName(), chunk_id, errDetail});
                 } finally {
                     if (chunk_error) {
                         getDownload().rejectChunkId(chunk_id);
@@ -228,10 +230,13 @@ public class ChunkDownloaderMono extends ChunkDownloader {
                             getDownload().getPartialProgress().add(-1L * chunk_reads);
                             getDownload().getProgress_meter().secureNotify();
                         }
+                        conta_error++;
                         if (!isExit() && !getDownload().isStopped() && !getDownload().getMain_panel().isExit() && !timeout && http_error != 403) {
-                            boolean ip_changed = sleepWithIpAwareBackoff(++conta_error, http_error);
-                            if (ip_changed) {
-                                conta_error = 0;
+                            if (http_error != 0 || conta_error >= 2) {
+                                boolean ip_changed = sleepWithIpAwareBackoff(conta_error, http_error);
+                                if (ip_changed) {
+                                    conta_error = 0;
+                                }
                             }
                         }
                     }

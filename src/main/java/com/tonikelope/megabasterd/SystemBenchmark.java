@@ -234,7 +234,7 @@ public final class SystemBenchmark {
 
         // Safe MEGA-friendly upper bounds: never exceed 6 concurrent DLs or 10 slots/file
         // so high-end machines saturate bandwidth cleanly without triggering host WAF/509 floods.
-        if (score >= 9 && (estMbps < 0 || estMbps >= 150)) {
+        if (score >= 9 && (estMbps < 0 || estMbps >= 100)) {
             tier = HardwareTier.HIGH_END;
             concurrentDl = 6;
             dlSlots = 10;
@@ -242,7 +242,7 @@ public final class SystemBenchmark {
             bufSize = 256 * 1024;
         } else if (score >= 6) {
             tier = HardwareTier.PERFORMANCE;
-            concurrentDl = 5;
+            concurrentDl = 6;
             dlSlots = 8;
             ulSlots = 6;
             bufSize = 128 * 1024;
@@ -260,12 +260,12 @@ public final class SystemBenchmark {
             bufSize = 32 * 1024;
         }
 
-        // If network is explicitly measured and slow (< 20 Mbps), avoid opening 10 slots that just compete.
-        if (estMbps > 0 && estMbps < 20) {
+        // If network is explicitly measured and slow (< 15 Mbps), avoid opening 10 slots that just compete.
+        if (estMbps > 0 && estMbps < 15) {
             dlSlots = Math.min(dlSlots, 3);
             concurrentDl = Math.min(concurrentDl, 2);
-        } else if (estMbps > 0 && estMbps < 60) {
-            dlSlots = Math.min(dlSlots, 5);
+        } else if (estMbps > 0 && estMbps < 50 && tier != HardwareTier.HIGH_END) {
+            dlSlots = Math.min(dlSlots, 6);
         }
 
         // Respect heap ceiling if user launched with tiny -Xmx.

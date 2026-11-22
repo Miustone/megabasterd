@@ -60,7 +60,8 @@ try {
         "--dest", $destDir,
         "--icon", "$RepoRoot\src\main\resources\images\pica_roja_big.ico",
         "--java-options", "--enable-native-access=ALL-UNNAMED",
-        "--java-options", "-Djava.net.preferIPv6Addresses=system"
+        "--java-options", "-Djava.net.preferIPv6Addresses=system",
+        "--java-options", "-Djdk.httpclient.keepalive.timeout=10"
     )
 
     & "$JdkHome\bin\jpackage.exe" @jpackageArgs

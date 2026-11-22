@@ -292,6 +292,9 @@ public final class MainPanel {
         if (System.getProperty("java.net.preferIPv6Addresses") == null) {
             System.setProperty("java.net.preferIPv6Addresses", "system");
         }
+        if (System.getProperty("jdk.httpclient.keepalive.timeout") == null) {
+            System.setProperty("jdk.httpclient.keepalive.timeout", "10");
+        }
     }
 
     public static void main(String args[]) {
